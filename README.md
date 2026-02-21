@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🔴 AI Red Team Scanner
+# 🔴 AI Red Team Onion 🧅
 
 **Automated security testing framework for AI systems — built to find what others miss.**
 
