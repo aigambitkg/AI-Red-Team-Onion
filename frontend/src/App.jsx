@@ -13,6 +13,9 @@ const api = {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   }).then(r => r.json()),
+  delete: (path) => fetch(`${API_BASE}${path}`, {
+    method: "DELETE",
+  }).then(r => r.json()),
 };
 
 // ─────────────────────────────────────────────
@@ -166,6 +169,34 @@ const S = `
   .fi { animation:fadeIn .25s ease forwards; }
   ::-webkit-scrollbar { width:4px; } ::-webkit-scrollbar-track { background:transparent; } ::-webkit-scrollbar-thumb { background:var(--border); border-radius:2px; }
 
+  /* Agent management */
+  .agent-card { background:var(--bg3); border:1px solid var(--border); border-radius:10px; padding:18px; display:flex; align-items:center; gap:16px; margin-bottom:10px; transition:all .2s; }
+  .agent-card:hover { border-color:var(--border-hi); }
+  .agent-card-ic { font-size:28px; flex-shrink:0; }
+  .agent-card-info { flex:1; min-width:0; }
+  .agent-card-name { font-size:14px; font-weight:600; margin-bottom:3px; }
+  .agent-card-url { font-size:11px; color:var(--muted); font-family:'DM Mono',monospace; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .agent-card-caps { display:flex; flex-wrap:wrap; gap:4px; margin-top:6px; }
+  .agent-status-dot { width:8px; height:8px; border-radius:50%; flex-shrink:0; }
+  .agent-status-dot.online { background:var(--green); box-shadow:0 0 8px var(--green); animation:pulse 2s infinite; }
+  .agent-status-dot.manual { background:var(--yellow); box-shadow:0 0 8px var(--yellow); }
+  .btn-danger { background:rgba(232,64,64,.1); color:var(--red); border:1px solid rgba(232,64,64,.2); }
+  .btn-danger:hover { background:rgba(232,64,64,.2); border-color:var(--red); }
+  .reg-form { background:var(--bg3); border:1px solid var(--border); border-radius:12px; padding:24px; margin-top:16px; }
+  .reg-form.collapsed { display:none; }
+  .icon-picker { display:flex; gap:8px; flex-wrap:wrap; margin-top:8px; }
+  .icon-opt { width:36px; height:36px; border-radius:8px; border:1px solid var(--border); background:var(--bg); cursor:pointer; font-size:18px; display:flex; align-items:center; justify-content:center; transition:all .2s; }
+  .icon-opt:hover { border-color:var(--border-hi); background:var(--bg3); }
+  .icon-opt.on { border-color:var(--blue); background:rgba(59,130,246,.12); }
+  .tag-input-wrap { display:flex; flex-wrap:wrap; gap:6px; padding:8px 12px; background:var(--bg3); border:1px solid var(--border); border-radius:8px; cursor:text; min-height:44px; align-items:center; }
+  .tag-input-wrap:focus-within { border-color:rgba(232,64,64,.5); box-shadow:0 0 0 3px rgba(232,64,64,.07); }
+  .tag-chip { display:inline-flex; align-items:center; gap:5px; padding:3px 10px; background:rgba(59,130,246,.12); color:var(--blue); border-radius:20px; font-size:11px; font-family:'DM Mono',monospace; }
+  .tag-chip button { background:none; border:none; color:var(--blue); cursor:pointer; padding:0; font-size:13px; line-height:1; opacity:.7; }
+  .tag-chip button:hover { opacity:1; }
+  .tag-bare-input { background:transparent; border:none; outline:none; color:var(--text); font-size:13px; min-width:80px; font-family:'Inter',sans-serif; flex:1; }
+  .success-banner { background:rgba(34,197,94,.08); border:1px solid rgba(34,197,94,.25); color:var(--green); padding:12px 16px; border-radius:8px; font-size:13px; margin-bottom:14px; display:flex; align-items:center; gap:10px; }
+  .error-banner { background:rgba(232,64,64,.08); border:1px solid rgba(232,64,64,.25); color:var(--red); padding:12px 16px; border-radius:8px; font-size:13px; margin-bottom:14px; display:flex; align-items:center; gap:10px; }
+
   /* Kill-Chain */
   .kc-track { display:flex; align-items:center; gap:0; margin-bottom:24px; }
   .kc-phase { flex:1; text-align:center; padding:14px 8px; background:var(--bg3); border:1px solid var(--border); position:relative; cursor:default; transition:all .3s; }
@@ -282,6 +313,17 @@ export default function App() {
   const wsRef = useRef(null);
   const logRef = useRef(null);
 
+  // Agent-Registrierung (manuell)
+  const ICON_PRESETS = ["🤖","🔭","💉","⚔️","🎯","🕵️","🧪","🔓","🔧","📡","💀","🦾","🛸","🧠","🔬"];
+  const emptyReg = { agent_id:"", name:"", icon:"🤖", description:"", base_url:"", capabilities:[], target_types:[] };
+  const [showRegForm, setShowRegForm] = useState(false);
+  const [regForm,     setRegForm]     = useState(emptyReg);
+  const [regCapInput, setRegCapInput] = useState("");
+  const [regTgtInput, setRegTgtInput] = useState("");
+  const [regStatus,   setRegStatus]   = useState(null); // null | "ok" | "error"
+  const [regMsg,      setRegMsg]      = useState("");
+  const [pingStatus,  setPingStatus]  = useState({}); // agent_id → "ok"|"error"|"checking"
+
   // ── Backend health + initial data ──────────
   useEffect(() => {
     api.get("/health")
@@ -382,6 +424,54 @@ export default function App() {
     setView(m.status === "complete" ? "report" : "live");
   };
 
+  // ── Manuelle Agent-Registrierung ────────────
+  const registerAgent = async () => {
+    if (!regForm.agent_id || !regForm.name || !regForm.base_url) {
+      setRegStatus("error"); setRegMsg("Agent-ID, Name und Base-URL sind Pflichtfelder.");
+      return;
+    }
+    try {
+      const res = await api.post("/agents/register", {
+        ...regForm,
+        capabilities: regForm.capabilities.length ? regForm.capabilities : ["general"],
+        target_types:  regForm.target_types.length  ? regForm.target_types  : ["webapp"],
+      });
+      if (res.status === "registered") {
+        setRegStatus("ok"); setRegMsg(`Agent "${regForm.name}" erfolgreich registriert.`);
+        setRegForm(emptyReg); setShowRegForm(false);
+        fetchAgents();
+      } else {
+        setRegStatus("error"); setRegMsg(res.detail || "Unbekannter Fehler beim Registrieren.");
+      }
+    } catch {
+      setRegStatus("error"); setRegMsg("Backend nicht erreichbar.");
+    }
+  };
+
+  const unregisterAgent = async (agentId) => {
+    try {
+      await api.delete(`/agents/${agentId}`);
+      fetchAgents();
+    } catch { /* silent */ }
+  };
+
+  const pingAgent = async (agent) => {
+    setPingStatus(p => ({ ...p, [agent.agent_id]: "checking" }));
+    try {
+      const res = await fetch(`${agent.base_url || agent.callback_url}/health`, { signal: AbortSignal.timeout(3000) });
+      setPingStatus(p => ({ ...p, [agent.agent_id]: res.ok ? "ok" : "error" }));
+    } catch {
+      setPingStatus(p => ({ ...p, [agent.agent_id]: "error" }));
+    }
+  };
+
+  const addTag = (field, val, setInput) => {
+    const tag = val.trim().toLowerCase().replace(/[^a-z0-9_-]/g, "-");
+    if (!tag) return;
+    setRegForm(f => ({ ...f, [field]: f[field].includes(tag) ? f[field] : [...f[field], tag] }));
+    setInput("");
+  };
+
   const exportReport = () => {
     if (!liveMission) return;
     const md = generateReport(liveMission, agents);
@@ -424,7 +514,7 @@ export default function App() {
             <span className="logo-name">RED<span>SWARM</span></span>
           </div>
           <nav className="header-nav">
-            {[["wizard","Mission"],["live","Monitor"],["modules","Module"],["report","Bericht"]].map(([v,l]) => (
+            {[["wizard","Mission"],["live","Monitor"],["agents","Agents"],["modules","Module"],["report","Bericht"]].map(([v,l]) => (
               <button key={v} className={`nav-btn ${view===v?"on":""}`} onClick={() => setView(v)}>{l}</button>
             ))}
           </nav>
@@ -438,7 +528,7 @@ export default function App() {
           {/* SIDEBAR */}
           <aside className="sidebar">
             <div className="slabel">Navigation</div>
-            {[["wizard","🎯","Mission erstellen"],["live","📡","Live-Monitor"],["modules","🧩","Module"],["report","📊","Bericht"]].map(([v,ic,l]) => (
+            {[["wizard","🎯","Mission erstellen"],["live","📡","Live-Monitor"],["agents","🤖","Agents"],["modules","🧩","Module"],["report","📊","Bericht"]].map(([v,ic,l]) => (
               <div key={v} className={`sitem ${view===v?"on":""}`} onClick={() => setView(v)}>
                 <span>{ic}</span>{l}
                 {v==="live" && liveMission?.status==="running" && <span className="sbadge">LIVE</span>}
@@ -811,6 +901,214 @@ export default function App() {
                     </>
                   )
                 }
+              </>
+            )}
+
+            {/* ═══════════ AGENTS ═══════════ */}
+            {view === "agents" && (
+              <>
+                <div style={{marginBottom:28}}>
+                  <div className="badge badge-blue">🤖 Agents</div>
+                  <h1 style={{fontFamily:"Syne",fontSize:26,fontWeight:800,margin:"4px 0 8px"}}>Agent-Verwaltung</h1>
+                  <p style={{fontSize:13,color:"var(--muted)"}}>Registrierte Agents — auto-verbunden via Docker oder manuell eingetragen.</p>
+                </div>
+
+                {/* Status-Banner */}
+                {regStatus === "ok"    && <div className="success-banner">✅ {regMsg}</div>}
+                {regStatus === "error" && <div className="error-banner">❌ {regMsg}</div>}
+
+                {/* Registrierte Agents */}
+                <div className="card">
+                  <div className="ctitle" style={{justifyContent:"space-between"}}>
+                    <span>Registrierte Agents ({agents.length})</span>
+                    <div style={{display:"flex",gap:8}}>
+                      <button className="btn btn-s" style={{padding:"6px 12px",fontSize:12}} onClick={fetchAgents}>🔄 Aktualisieren</button>
+                      <button className="btn btn-p" style={{padding:"6px 14px",fontSize:12}} onClick={() => { setShowRegForm(s=>!s); setRegStatus(null); }}>
+                        {showRegForm ? "✕ Abbrechen" : "+ Manuell registrieren"}
+                      </button>
+                    </div>
+                  </div>
+
+                  {agents.length === 0 ? (
+                    <div className="no-agents">
+                      ⚠️ Keine Agents registriert. Starte die Docker-Container oder registriere einen Agent manuell.
+                    </div>
+                  ) : (
+                    agents.map(a => (
+                      <div key={a.agent_id} className="agent-card">
+                        <div className="agent-card-ic">{a.icon || "🤖"}</div>
+                        <div style={{width:8,height:8,borderRadius:"50%",background:"var(--green)",boxShadow:"0 0 8px var(--green)",flexShrink:0}} />
+                        <div className="agent-card-info">
+                          <div className="agent-card-name">{a.name}</div>
+                          <div style={{fontSize:12,color:"var(--muted)",marginBottom:4}}>{a.description}</div>
+                          <div className="agent-card-url">{a.base_url || a.callback_url || "–"}</div>
+                          <div className="agent-card-caps">
+                            {(a.capabilities||[]).map(c => <span key={c} className="cap">{c}</span>)}
+                            {(a.target_types||[]).map(t => <span key={t} className="mod-tag mod-tag-type">{t}</span>)}
+                          </div>
+                        </div>
+                        <div style={{display:"flex",gap:8,flexShrink:0}}>
+                          <button
+                            className={`btn btn-s`}
+                            style={{
+                              padding:"5px 12px", fontSize:11,
+                              color: pingStatus[a.agent_id]==="ok" ? "var(--green)" : pingStatus[a.agent_id]==="error" ? "var(--red)" : undefined
+                            }}
+                            onClick={() => pingAgent(a)}
+                          >
+                            {pingStatus[a.agent_id]==="checking" ? "⏳" : pingStatus[a.agent_id]==="ok" ? "✅ Online" : pingStatus[a.agent_id]==="error" ? "❌ Offline" : "📡 Ping"}
+                          </button>
+                          <button className="btn btn-danger" style={{padding:"5px 12px",fontSize:11}} onClick={() => unregisterAgent(a.agent_id)}>
+                            🗑 Entfernen
+                          </button>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+
+                {/* Manuelles Registrierungsformular */}
+                {showRegForm && (
+                  <div className="reg-form fi">
+                    <div className="ctitle">➕ Agent manuell registrieren</div>
+                    <p style={{fontSize:12,color:"var(--muted)",marginBottom:20}}>
+                      Nutze dies wenn ein Agent läuft aber sich nicht automatisch verbunden hat — z.B. ein lokaler Agent oder ein Agent auf einem anderen Server.
+                    </p>
+
+                    <div className="grid2">
+                      <div className="fg">
+                        <label className="flabel">Agent-ID <span style={{color:"var(--red)"}}>*</span></label>
+                        <input className="finput" placeholder="z.B. recon oder mein-custom-agent"
+                          value={regForm.agent_id}
+                          onChange={e => setRegForm(f=>({...f, agent_id: e.target.value.toLowerCase().replace(/\s+/g,"-")}))} />
+                        <div style={{fontSize:11,color:"var(--muted)",marginTop:4}}>Nur Kleinbuchstaben, Zahlen, Bindestriche</div>
+                      </div>
+                      <div className="fg">
+                        <label className="flabel">Name <span style={{color:"var(--red)"}}>*</span></label>
+                        <input className="finput" placeholder="z.B. Recon Agent" value={regForm.name}
+                          onChange={e => setRegForm(f=>({...f, name: e.target.value}))} />
+                      </div>
+                    </div>
+
+                    <div className="fg">
+                      <label className="flabel">Beschreibung</label>
+                      <input className="finput" placeholder="Kurze Beschreibung was dieser Agent tut"
+                        value={regForm.description}
+                        onChange={e => setRegForm(f=>({...f, description: e.target.value}))} />
+                    </div>
+
+                    <div className="fg">
+                      <label className="flabel">Base-URL <span style={{color:"var(--red)"}}>*</span></label>
+                      <input className="finput" placeholder="http://localhost:8100 oder http://mein-server:8100"
+                        value={regForm.base_url}
+                        onChange={e => setRegForm(f=>({...f, base_url: e.target.value}))} />
+                      <div style={{fontSize:11,color:"var(--muted)",marginTop:4}}>Die URL unter der der Agent-HTTP-Service erreichbar ist</div>
+                    </div>
+
+                    <div className="fg">
+                      <label className="flabel">Icon</label>
+                      <div className="icon-picker">
+                        {ICON_PRESETS.map(ic => (
+                          <button key={ic} className={`icon-opt ${regForm.icon===ic?"on":""}`}
+                            onClick={() => setRegForm(f=>({...f, icon: ic}))}>
+                            {ic}
+                          </button>
+                        ))}
+                        <input className="finput" style={{width:80,padding:"6px 10px",textAlign:"center",fontSize:20}}
+                          value={regForm.icon}
+                          onChange={e => setRegForm(f=>({...f, icon: e.target.value}))}
+                          placeholder="🤖" maxLength={4} />
+                      </div>
+                    </div>
+
+                    <div className="grid2">
+                      <div className="fg" style={{marginBottom:0}}>
+                        <label className="flabel">Fähigkeiten (Capabilities)</label>
+                        <div className="tag-input-wrap" onClick={e => e.currentTarget.querySelector("input")?.focus()}>
+                          {regForm.capabilities.map(c => (
+                            <span key={c} className="tag-chip">
+                              {c}
+                              <button onClick={() => setRegForm(f=>({...f, capabilities: f.capabilities.filter(x=>x!==c)}))}>×</button>
+                            </span>
+                          ))}
+                          <input className="tag-bare-input"
+                            placeholder={regForm.capabilities.length ? "" : "z.B. scanning, fingerprinting..."}
+                            value={regCapInput}
+                            onChange={e => setRegCapInput(e.target.value)}
+                            onKeyDown={e => {
+                              if (e.key==="Enter"||e.key===","||e.key===" ") { e.preventDefault(); addTag("capabilities", regCapInput, setRegCapInput); }
+                              if (e.key==="Backspace"&&!regCapInput&&regForm.capabilities.length) setRegForm(f=>({...f, capabilities: f.capabilities.slice(0,-1)}));
+                            }}
+                            onBlur={() => addTag("capabilities", regCapInput, setRegCapInput)}
+                          />
+                        </div>
+                        <div style={{fontSize:11,color:"var(--muted)",marginTop:4}}>Enter oder Komma zum Hinzufügen</div>
+                      </div>
+
+                      <div className="fg" style={{marginBottom:0}}>
+                        <label className="flabel">Zieltypen (Target Types)</label>
+                        <div className="tag-input-wrap" onClick={e => e.currentTarget.querySelector("input")?.focus()}>
+                          {regForm.target_types.map(t => (
+                            <span key={t} className="tag-chip" style={{background:"rgba(168,85,247,.1)",color:"var(--purple)"}}>
+                              {t}
+                              <button style={{color:"var(--purple)"}} onClick={() => setRegForm(f=>({...f, target_types: f.target_types.filter(x=>x!==t)}))}>×</button>
+                            </span>
+                          ))}
+                          <input className="tag-bare-input"
+                            placeholder={regForm.target_types.length ? "" : "z.B. webapp, api, chatbot..."}
+                            value={regTgtInput}
+                            onChange={e => setRegTgtInput(e.target.value)}
+                            onKeyDown={e => {
+                              if (e.key==="Enter"||e.key===","||e.key===" ") { e.preventDefault(); addTag("target_types", regTgtInput, setRegTgtInput); }
+                              if (e.key==="Backspace"&&!regTgtInput&&regForm.target_types.length) setRegForm(f=>({...f, target_types: f.target_types.slice(0,-1)}));
+                            }}
+                            onBlur={() => addTag("target_types", regTgtInput, setRegTgtInput)}
+                          />
+                        </div>
+                        <div style={{fontSize:11,color:"var(--muted)",marginTop:4}}>Welche Ziele kann dieser Agent angreifen?</div>
+                      </div>
+                    </div>
+
+                    {/* Schnell-Vorlagen */}
+                    <div style={{marginTop:20,marginBottom:20}}>
+                      <div style={{fontSize:11,color:"var(--muted)",marginBottom:8,textTransform:"uppercase",letterSpacing:"0.8px"}}>Schnell-Vorlage</div>
+                      <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+                        {[
+                          {id:"recon",    name:"Recon Agent",      icon:"🔭", desc:"Reconnaissance & Fingerprinting",  caps:["scanning","fingerprinting","osint"],             tgts:["webapp","api","chatbot"], url:"http://localhost:8100"},
+                          {id:"exploit",  name:"Exploit Agent",    icon:"💉", desc:"Exploit-Entwicklung & Poisoning",   caps:["payload-dev","rag-poisoning"],                    tgts:["webapp","api"],           url:"http://localhost:8101"},
+                          {id:"execution",name:"Execution Agent",  icon:"⚔️", desc:"Browser-Exploitation & Angriffe",   caps:["browser-exploitation","api-attacks"],             tgts:["webapp","chatbot"],        url:"http://localhost:8102"},
+                          {id:"c4",       name:"C4 — C&C",         icon:"🎯", desc:"Strategie, Koordination & Reports", caps:["strategy-planning","report-generation"],           tgts:["webapp","api","chatbot"], url:"http://localhost:8103"},
+                        ].map(t => (
+                          <button key={t.id} className="btn btn-s" style={{fontSize:12,padding:"7px 14px"}}
+                            onClick={() => setRegForm({ agent_id:t.id, name:t.name, icon:t.icon, description:t.desc, base_url:t.url, capabilities:t.caps, target_types:t.tgts })}>
+                            {t.icon} {t.name}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="btn-row" style={{marginTop:0}}>
+                      <button className="btn btn-s" onClick={() => { setShowRegForm(false); setRegStatus(null); setRegForm(emptyReg); }}>Abbrechen</button>
+                      <button className="btn btn-p"
+                        disabled={!regForm.agent_id || !regForm.name || !regForm.base_url}
+                        onClick={registerAgent}>
+                        ✅ Agent registrieren
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Hilfe-Box */}
+                <div className="card" style={{marginTop:8}}>
+                  <div className="ctitle">💡 Wann manuell registrieren?</div>
+                  <div style={{fontSize:13,color:"var(--muted)",lineHeight:1.8}}>
+                    <p style={{marginBottom:8}}>Agents registrieren sich <strong style={{color:"var(--text)"}}>automatisch</strong> sobald ihre Docker-Container starten. Manuelle Registrierung ist nötig wenn:</p>
+                    <p>• Der Agent auf einem <strong style={{color:"var(--text)"}}>anderen Server</strong> oder lokal läuft (nicht im gleichen Docker-Netz)</p>
+                    <p>• Der Container gestartet ist aber die <strong style={{color:"var(--text)"}}>Auto-Registrierung fehlgeschlagen</strong> ist (Backend war noch nicht bereit)</p>
+                    <p>• Du einen <strong style={{color:"var(--text)"}}>eigenen Custom-Agent</strong> entwickelt hast der die REDSWARM API implementiert</p>
+                    <p style={{marginTop:8}}>Custom Agents müssen <code style={{background:"var(--bg3)",padding:"1px 6px",borderRadius:4,fontFamily:"DM Mono",fontSize:11}}>POST /run</code> und <code style={{background:"var(--bg3)",padding:"1px 6px",borderRadius:4,fontFamily:"DM Mono",fontSize:11}}>GET /health</code> implementieren.</p>
+                  </div>
+                </div>
               </>
             )}
 
