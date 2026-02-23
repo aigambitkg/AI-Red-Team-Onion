@@ -1,12 +1,18 @@
 #!/usr/bin/env python3
 """
-AI Red Team Scanner - Main Entry Point (v2.0)
+AI Red Team Scanner - Main Entry Point (v3.0)
 ===============================================
+v3.0: Swarm-Modus mit Multi-Agent-Architektur, Blackboard, AI Kill Chain.
 v2.0: Monitor-Dashboard, Kill-Switch, Browser-Reset, Validierung.
 
 Nutzung:
   # Standalone mit Dashboard
   python main.py --mode scan --url https://example.com --type chatbot
+
+  # SWARM-Modus (Multi-Agent Red Team)
+  python main.py --mode swarm --url https://target.com --type chatbot
+  python main.py --mode swarm --url https://target.com --type agent --scan-depth deep
+  python main.py --mode swarm --url https://t1.com --url https://t2.com --type chatbot
 
   # Polling-Modus
   python main.py --mode poll
@@ -55,13 +61,19 @@ logger = logging.getLogger("RedTeam.Main")
 def parse_args():
     parser = argparse.ArgumentParser(description="AI Red Team Scanner v2.0")
     parser.add_argument(
-        "--mode", choices=["poll", "scan", "n8n"],
+        "--mode", choices=["poll", "scan", "n8n", "swarm"],
         default="poll",
-        help="Betriebsmodus"
+        help="Betriebsmodus (swarm = Multi-Agent Red Team)"
     )
-    parser.add_argument("--url", help="Ziel-URL für Scan-Modus")
-    parser.add_argument("--type", choices=["chatbot", "api", "both"], default="chatbot")
+    parser.add_argument("--url", action="append", help="Ziel-URL(s) — mehrfach angeben für Multi-Target")
+    parser.add_argument("--type", choices=["chatbot", "api", "both", "agent", "rag"], default="chatbot")
     parser.add_argument("--page-id", help="Notion Page ID (n8n-Modus)")
+    parser.add_argument("--scan-depth", choices=["quick", "standard", "deep"],
+                        default="standard", help="Scan-Tiefe (Swarm-Modus)")
+    parser.add_argument("--objective", default="Vollständige Sicherheitsanalyse",
+                        help="Operationsziel (Swarm-Modus)")
+    parser.add_argument("--swarm-timeout", type=int, default=30,
+                        help="Swarm-Timeout in Minuten (Standard: 30)")
     parser.add_argument("--api-url", help="API-Endpoint URL")
     parser.add_argument("--api-key", help="API Key des Ziel-Systems")
     parser.add_argument("--api-type", choices=["openai", "anthropic", "custom"],
@@ -111,6 +123,9 @@ async def run_single_scan(args, config: AppConfig, event_logger: EventLogger) ->
         logger.error("--url ist erforderlich im scan-Modus")
         sys.exit(1)
 
+    # --url ist jetzt eine Liste (action=append), erstes Element nehmen
+    scan_url = args.url[0] if isinstance(args.url, list) else args.url
+
     notion_key = os.getenv("NOTION_API_KEY")
     db_id = os.getenv("NOTION_DATABASE_ID")
     reporter = None
@@ -122,10 +137,10 @@ async def run_single_scan(args, config: AppConfig, event_logger: EventLogger) ->
 
         if not page_id:
             # Automatisch neue Seite in Notion erstellen
-            scan_name = args.url.replace("https://", "").replace("http://", "").rstrip("/")
+            scan_name = scan_url.replace("https://", "").replace("http://", "").rstrip("/")
             page_id = reporter.create_scan_page(
                 name=scan_name,
-                url=args.url,
+                url=scan_url,
                 target_type=args.type,
             )
             logger.info(f"📝 Notion-Seite erstellt: {scan_name} (ID: {page_id})")
@@ -142,8 +157,8 @@ async def run_single_scan(args, config: AppConfig, event_logger: EventLogger) ->
         )
 
     target = ScanTarget(
-        name=f"CLI Scan: {args.url}",
-        url=args.url,
+        name=f"CLI Scan: {scan_url}",
+        url=scan_url,
         target_type=args.type,
         api_config=api_config,
         notion_page_id=page_id,
@@ -355,6 +370,81 @@ async def run_polling_mode(config: AppConfig, event_logger: EventLogger) -> None
         reporter.close()
 
 
+async def run_swarm_mode(args, config: AppConfig, event_logger: EventLogger) -> None:
+    """
+    Swarm-Modus: Multi-Agent Red Team mit Blackboard-Architektur.
+    Startet den vollständigen AI Kill Chain Schwarm.
+    """
+    from swarm.orchestrator import SwarmOrchestrator
+
+    urls = args.url
+    if not urls:
+        logger.error("--url ist erforderlich im swarm-Modus")
+        sys.exit(1)
+
+    # Targets aus URLs bauen
+    targets = [{"url": u, "type": args.type} for u in urls]
+
+    logger.info(f"🐝 Swarm-Modus: {len(targets)} Ziel(e), Tiefe: {args.scan_depth}")
+
+    orchestrator = SwarmOrchestrator(
+        config=config,
+        event_logger=event_logger,
+    )
+
+    try:
+        result = await orchestrator.launch(
+            targets=targets,
+            objective=args.objective,
+            scan_depth=args.scan_depth,
+            timeout_minutes=args.swarm_timeout,
+        )
+
+        # Report ausgeben
+        report_text = result.get("report", "Kein Bericht generiert")
+        print("\n" + "=" * 60)
+        print(report_text)
+        print("=" * 60)
+
+        # Dashboard-Daten
+        dashboard = result.get("dashboard", {})
+        timeline = result.get("timeline", [])
+
+        print(f"\n📊 Dashboard: {dashboard.get('total_entries', 0)} Einträge")
+        print(f"⏱️  Dauer: {result.get('duration_seconds', 0):.0f}s")
+        print(f"🎯 Ziele: {len(targets)}")
+
+        # Report als Datei speichern
+        report_path = Path("logs") / f"swarm_report_{result['operation_id']}.md"
+        report_path.parent.mkdir(exist_ok=True)
+        report_path.write_text(report_text)
+        logger.info(f"📄 Report gespeichert: {report_path}")
+
+        # Notion-Integration (falls konfiguriert)
+        notion_key = os.getenv("NOTION_API_KEY")
+        db_id = os.getenv("NOTION_DATABASE_ID")
+        if notion_key and db_id:
+            try:
+                reporter = NotionReporter(api_key=notion_key, database_id=db_id)
+                for target in targets:
+                    scan_name = f"SWARM: {target['url'].replace('https://', '').replace('http://', '').rstrip('/')}"
+                    page_id = reporter.create_scan_page(
+                        name=scan_name,
+                        url=target["url"],
+                        target_type=target["type"],
+                    )
+                    reporter.update_scan_status(page_id, "✅ Abgeschlossen",
+                                                detail=f"Swarm Op: {result['operation_id']}")
+                reporter.close()
+                logger.info("📝 Swarm-Ergebnisse in Notion gespeichert")
+            except Exception as e:
+                logger.warning(f"Notion-Export fehlgeschlagen: {e}")
+
+    except Exception as e:
+        logger.error(f"Swarm-Fehler: {e}")
+        raise
+
+
 async def main():
     args = parse_args()
     config = AppConfig()
@@ -364,18 +454,34 @@ async def main():
     if args.no_api:
         config.scan.enable_api_tests = False
 
-    print(r"""
+    # Banner je nach Modus
+    if args.mode == "swarm":
+        print(r"""
     ╔══════════════════════════════════════════════╗
-    ║     🔴 AI RED TEAM SCANNER v2.0              ║
+    ║     🔴 AI RED TEAM SWARM v3.0                ║
+    ║     Multi-Agent AI Security Framework        ║
+    ║     ─────────────────────────────             ║
+    ║     🐝 Recon · Exploit · Execution · C4      ║
+    ║     📋 Blackboard-Architektur                ║
+    ║     ⛓️  AI Kill Chain (6 Phasen)              ║
+    ║     ─────────────────────────────             ║
+    ║     Powered by AI-Gambit                     ║
+    ╚══════════════════════════════════════════════╝
+        """)
+    else:
+        print(r"""
+    ╔══════════════════════════════════════════════╗
+    ║     🔴 AI RED TEAM SCANNER v3.0              ║
     ║     AI Security Testing Framework            ║
     ║     ─────────────────────────────             ║
     ║     + Monitor Dashboard + Kill-Switch         ║
     ║     + False-Positive Validierung              ║
     ║     + Frischer Browser pro Modul              ║
+    ║     + Swarm-Modus (--mode swarm)              ║
     ║     ─────────────────────────────             ║
     ║     Powered by AI-Gambit                     ║
     ╚══════════════════════════════════════════════╝
-    """)
+        """)
 
     # EventLogger + Dashboard starten
     event_logger = EventLogger(log_dir="logs")
@@ -433,7 +539,9 @@ async def main():
         return
     # ─────────────────────────────────────────────────────────────────────────
 
-    if args.mode == "scan":
+    if args.mode == "swarm":
+        await run_swarm_mode(args, config, event_logger)
+    elif args.mode == "scan":
         await run_single_scan(args, config, event_logger)
     elif args.mode == "n8n":
         await run_n8n_mode(args, config, event_logger)

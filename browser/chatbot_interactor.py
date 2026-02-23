@@ -1062,3 +1062,640 @@ class ChatbotInteractor:
     async def get_page_content(self) -> str:
         """Gesamten Seiteninhalt holen (für passive Analyse)"""
         return await self.page.content()
+
+    # ─── MULTI-ENTRY-POINT DETECTION (Swarm-Modus) ────────────────────────────
+
+    async def detect_all_entry_points(self) -> list[dict]:
+        """
+        Findet ALLE möglichen Einstiegspunkte auf einer Seite.
+        Geht weit über detect_chatbot() hinaus und sucht systematisch nach:
+        1. Chatbot-Widgets (bestehende Logik)
+        2. Form-Apps (Textarea + Submit)
+        3. Rohe textarea/input + button Muster
+        4. contenteditable und role="textbox" Elemente
+        5. Versteckte/dynamische iframes
+        6. JavaScript-API-Hooks (window-Objekte, SDK-Referenzen)
+
+        Returns:
+            Liste von Entry-Point-Dicts mit Typ, Selektoren, Kontext
+        """
+        entry_points = []
+        logger.info("═══ Multi-Entry-Point-Scan gestartet ═══")
+
+        # 1. Chatbot-Widgets (bestehende Logik)
+        chatbot = await self.detect_chatbot()
+        if chatbot:
+            entry_points.append({
+                "type": "chatbot_widget",
+                "provider": chatbot.provider,
+                "selectors": chatbot.selector_set,
+                "is_iframe": chatbot.is_iframe,
+                "confidence": 0.9,
+                "description": f"Chatbot-Widget: {chatbot.provider}",
+            })
+            # Reset für weitere Suche
+            self.chatbot_info = None
+            self._widget_frame = None
+
+        # 2. Form-Apps (Textarea + Submit-Button mit KI-Keywords)
+        form_apps = await self._detect_all_form_apps()
+        entry_points.extend(form_apps)
+
+        # 3. Rohe Input-Felder (textarea/input ohne bekanntes Widget)
+        raw_inputs = await self._detect_raw_inputs()
+        entry_points.extend(raw_inputs)
+
+        # 4. ContentEditable und role="textbox" Elemente
+        editable_els = await self._detect_contenteditable()
+        entry_points.extend(editable_els)
+
+        # 5. Versteckte/dynamische iframes
+        hidden_iframes = await self._detect_hidden_iframes()
+        entry_points.extend(hidden_iframes)
+
+        # 6. JavaScript-API-Hooks
+        js_apis = await self._detect_js_api_hooks()
+        entry_points.extend(js_apis)
+
+        # Deduplizieren nach Selektor
+        seen = set()
+        unique = []
+        for ep in entry_points:
+            key = str(ep.get("selectors", {})) + ep.get("type", "")
+            if key not in seen:
+                seen.add(key)
+                unique.append(ep)
+
+        logger.info(f"═══ {len(unique)} Entry-Points gefunden ═══")
+        for i, ep in enumerate(unique):
+            logger.info(f"  [{i+1}] {ep['type']}: {ep.get('description', 'n/a')} "
+                        f"(confidence={ep.get('confidence', 0):.1f})")
+
+        return unique
+
+    async def _detect_all_form_apps(self) -> list[dict]:
+        """Findet alle Textarea+Button-Kombinationen auf der Seite"""
+        try:
+            results = await self.page.evaluate("""
+                () => {
+                    const entries = [];
+                    const textareas = document.querySelectorAll('textarea');
+
+                    for (const ta of textareas) {
+                        const rect = ta.getBoundingClientRect();
+                        if (rect.width < 100 || rect.height < 30) continue;
+                        if (!ta.offsetParent) continue;  // Nicht sichtbar
+
+                        // Suche passende Buttons (im gleichen Formular oder nahe)
+                        const form = ta.closest('form');
+                        const searchScope = form || ta.parentElement?.parentElement?.parentElement || document;
+                        const buttons = searchScope.querySelectorAll('button, input[type="submit"]');
+
+                        for (const btn of buttons) {
+                            if (!btn.offsetParent) continue;
+                            const text = btn.textContent?.trim().toLowerCase() || '';
+                            const btnRect = btn.getBoundingClientRect();
+
+                            // Button muss sichtbar und in sinnvollem Abstand sein
+                            if (btnRect.width < 20) continue;
+
+                            entries.push({
+                                textarea_placeholder: ta.placeholder || '',
+                                textarea_name: ta.name || '',
+                                textarea_id: ta.id || '',
+                                textarea_selector: ta.id ? '#' + ta.id :
+                                    (ta.name ? 'textarea[name=\"' + ta.name + '\"]' : 'textarea'),
+                                button_text: btn.textContent?.trim() || '',
+                                button_type: btn.type || '',
+                                has_form: !!form,
+                                form_action: form?.action || '',
+                            });
+                        }
+                    }
+                    return entries;
+                }
+            """)
+
+            entry_points = []
+            for r in (results or []):
+                entry_points.append({
+                    "type": "form_app",
+                    "selectors": {
+                        "input": r["textarea_selector"],
+                        "submit_text": r["button_text"],
+                        "form_action": r.get("form_action", ""),
+                    },
+                    "confidence": 0.7,
+                    "description": f"Form-App: '{r['button_text']}' "
+                                   f"(placeholder: '{r['textarea_placeholder'][:40]}')",
+                    "metadata": r,
+                })
+            return entry_points
+
+        except Exception as e:
+            logger.debug(f"Form-App-Scan fehlgeschlagen: {e}")
+            return []
+
+    async def _detect_raw_inputs(self) -> list[dict]:
+        """Findet rohe Input-Felder die nicht zu bekannten Widgets gehören"""
+        try:
+            results = await self.page.evaluate("""
+                () => {
+                    const entries = [];
+                    const selectors = [
+                        'input[type="text"][placeholder]',
+                        'input[type="search"]',
+                        'input:not([type])[placeholder]',
+                    ];
+
+                    for (const sel of selectors) {
+                        document.querySelectorAll(sel).forEach(el => {
+                            const rect = el.getBoundingClientRect();
+                            if (rect.width < 100 || !el.offsetParent) return;
+
+                            const ph = (el.placeholder || '').toLowerCase();
+                            // Filter: Nur potentiell KI-relevante Felder
+                            const aiKeywords = ['frag', 'ask', 'search', 'suche', 'message',
+                                'nachricht', 'query', 'prompt', 'chat', 'eingabe',
+                                'input', 'type', 'schreib', 'write'];
+                            const isRelevant = aiKeywords.some(kw => ph.includes(kw));
+
+                            if (isRelevant || ph.length > 20) {
+                                entries.push({
+                                    tag: el.tagName.toLowerCase(),
+                                    type: el.type || 'text',
+                                    placeholder: el.placeholder || '',
+                                    id: el.id || '',
+                                    name: el.name || '',
+                                    selector: el.id ? '#' + el.id :
+                                        (el.name ? 'input[name=\"' + el.name + '\"]' :
+                                         'input[placeholder=\"' + el.placeholder + '\"]'),
+                                });
+                            }
+                        });
+                    }
+                    return entries;
+                }
+            """)
+
+            entry_points = []
+            for r in (results or []):
+                entry_points.append({
+                    "type": "raw_input",
+                    "selectors": {"input": r["selector"]},
+                    "confidence": 0.4,
+                    "description": f"Raw Input: placeholder='{r['placeholder'][:50]}'",
+                    "metadata": r,
+                })
+            return entry_points
+
+        except Exception as e:
+            logger.debug(f"Raw-Input-Scan fehlgeschlagen: {e}")
+            return []
+
+    async def _detect_contenteditable(self) -> list[dict]:
+        """Findet contenteditable und role=textbox Elemente"""
+        try:
+            results = await self.page.evaluate("""
+                () => {
+                    const entries = [];
+                    const editables = document.querySelectorAll(
+                        '[contenteditable="true"], [role="textbox"]'
+                    );
+                    for (const el of editables) {
+                        const rect = el.getBoundingClientRect();
+                        if (rect.width < 80 || rect.height < 20 || !el.offsetParent) continue;
+
+                        // Nicht wenn es ein ganzer WYSIWYG-Editor ist (z.B. CKEditor body)
+                        if (el.tagName === 'BODY' || el.classList.contains('ProseMirror')) continue;
+
+                        entries.push({
+                            tag: el.tagName.toLowerCase(),
+                            role: el.getAttribute('role') || '',
+                            aria_label: el.getAttribute('aria-label') || '',
+                            class_name: el.className?.substring?.(0, 80) || '',
+                            selector: el.getAttribute('role') === 'textbox' ?
+                                '[role="textbox"]' : '[contenteditable="true"]',
+                            width: rect.width,
+                            height: rect.height,
+                        });
+                    }
+                    return entries;
+                }
+            """)
+
+            entry_points = []
+            for r in (results or []):
+                entry_points.append({
+                    "type": "contenteditable",
+                    "selectors": {"input": r["selector"]},
+                    "confidence": 0.5,
+                    "description": f"ContentEditable: {r['tag']} "
+                                   f"(aria-label: '{r.get('aria_label', '')[:40]}')",
+                    "metadata": r,
+                })
+            return entry_points
+
+        except Exception as e:
+            logger.debug(f"ContentEditable-Scan fehlgeschlagen: {e}")
+            return []
+
+    async def _detect_hidden_iframes(self) -> list[dict]:
+        """Findet versteckte oder dynamisch geladene iframes mit potentiellen Chat-Interfaces"""
+        try:
+            results = await self.page.evaluate("""
+                () => {
+                    const entries = [];
+                    const iframes = document.querySelectorAll('iframe');
+
+                    for (const f of iframes) {
+                        const src = f.src || '';
+                        const srcdoc = f.srcdoc || '';
+                        const style = window.getComputedStyle(f);
+                        const isHidden = style.display === 'none' ||
+                                        style.visibility === 'hidden' ||
+                                        style.opacity === '0' ||
+                                        f.width === '0' || f.height === '0';
+
+                        // Prüfe ob iframe Chat/KI-relevant sein könnte
+                        const chatKeywords = ['chat', 'bot', 'widget', 'messenger', 'ai',
+                            'assistant', 'support', 'help', 'voiceflow', 'dialogflow',
+                            'intercom', 'drift', 'crisp', 'tidio', 'zendesk', 'hubspot',
+                            'freshdesk', 'kommunicate', 'tawk', 'livechat', 'olark'];
+                        const srcLower = src.toLowerCase();
+                        const isChatRelated = chatKeywords.some(kw => srcLower.includes(kw));
+                        const hasSrcdocWidget = srcdoc.includes('widget') || srcdoc.includes('chat');
+
+                        if (isChatRelated || hasSrcdocWidget || (isHidden && srcdoc)) {
+                            entries.push({
+                                src: src.substring(0, 200),
+                                has_srcdoc: !!srcdoc,
+                                is_hidden: isHidden,
+                                display: style.display,
+                                width: f.offsetWidth,
+                                height: f.offsetHeight,
+                                id: f.id || '',
+                                name: f.name || '',
+                            });
+                        }
+                    }
+                    return entries;
+                }
+            """)
+
+            entry_points = []
+            for r in (results or []):
+                desc = f"Hidden iframe: src='{r['src'][:60]}'" if r['src'] else "Hidden srcdoc iframe"
+                entry_points.append({
+                    "type": "hidden_iframe",
+                    "selectors": {
+                        "iframe_src": r["src"],
+                        "iframe_id": r.get("id", ""),
+                        "has_srcdoc": r["has_srcdoc"],
+                    },
+                    "confidence": 0.6 if r["is_hidden"] else 0.3,
+                    "description": desc,
+                    "metadata": r,
+                })
+            return entry_points
+
+        except Exception as e:
+            logger.debug(f"Hidden-iframe-Scan fehlgeschlagen: {e}")
+            return []
+
+    async def _detect_js_api_hooks(self) -> list[dict]:
+        """
+        Sucht nach JavaScript-API-Hooks: Exposed window-Objekte,
+        LLM-SDK-Referenzen, API-Konfigurationen.
+        """
+        try:
+            results = await self.page.evaluate("""
+                () => {
+                    const findings = [];
+
+                    // 1. Bekannte Chatbot-SDKs im window-Objekt
+                    const sdkKeys = [
+                        'Intercom', 'drift', 'crisp', 'Tawk_API', 'tidioChatApi',
+                        'zE', 'HubSpotConversations', 'Freshdesk', '$crisp',
+                        'voiceflow', 'botpress', 'webchat', 'Kommunicate',
+                        'LiveChatWidget', 'olark', 'chatwoot',
+                    ];
+                    for (const key of sdkKeys) {
+                        if (window[key] !== undefined) {
+                            findings.push({
+                                type: 'sdk',
+                                key: key,
+                                has_open: typeof window[key]?.open === 'function' ||
+                                         typeof window[key]?.show === 'function',
+                            });
+                        }
+                    }
+
+                    // 2. Exposed Konfigurationen
+                    const configKeys = [
+                        '__config__', '__NEXT_DATA__', '__NUXT__',
+                        'ENV', 'APP_CONFIG', '__APP_CONFIG__',
+                    ];
+                    for (const key of configKeys) {
+                        if (window[key]) {
+                            const json = JSON.stringify(window[key]).toLowerCase();
+                            const hasAI = ['openai', 'anthropic', 'gemini', 'llm',
+                                          'api_key', 'apikey', 'token', 'endpoint',
+                                          'chatbot', 'assistant'].some(kw => json.includes(kw));
+                            if (hasAI) {
+                                findings.push({
+                                    type: 'config',
+                                    key: key,
+                                    ai_related: true,
+                                    preview: json.substring(0, 200),
+                                });
+                            }
+                        }
+                    }
+
+                    // 3. Fetch/XHR API-Endpunkte (aus Script-Tags)
+                    const scripts = document.querySelectorAll('script:not([src])');
+                    const apiPatterns = [
+                        /['"](\\/api\\/[^'"\\s]+)['"]/.source,
+                        /['"](\\/v[12]\\/[^'"\\s]+)['"]/.source,
+                        /['"](https?:\\/\\/[^'"\\s]*(?:api|graphql|chat|completion)[^'"\\s]*)['"]/.source,
+                    ];
+                    for (const script of scripts) {
+                        const text = script.textContent || '';
+                        for (const pattern of apiPatterns) {
+                            const regex = new RegExp(pattern, 'g');
+                            let match;
+                            while ((match = regex.exec(text)) !== null) {
+                                findings.push({
+                                    type: 'api_endpoint',
+                                    endpoint: match[1].substring(0, 200),
+                                });
+                            }
+                        }
+                    }
+
+                    return findings;
+                }
+            """)
+
+            entry_points = []
+            for r in (results or []):
+                if r["type"] == "sdk":
+                    entry_points.append({
+                        "type": "js_sdk",
+                        "selectors": {"sdk_key": r["key"], "has_open": r.get("has_open", False)},
+                        "confidence": 0.8,
+                        "description": f"JS SDK: window.{r['key']} "
+                                       f"({'hat open()' if r.get('has_open') else 'passiv'})",
+                        "metadata": r,
+                    })
+                elif r["type"] == "config":
+                    entry_points.append({
+                        "type": "js_config",
+                        "selectors": {"config_key": r["key"]},
+                        "confidence": 0.7,
+                        "description": f"JS Config: window.{r['key']} (AI-related)",
+                        "metadata": r,
+                    })
+                elif r["type"] == "api_endpoint":
+                    entry_points.append({
+                        "type": "api_endpoint",
+                        "selectors": {"endpoint": r["endpoint"]},
+                        "confidence": 0.6,
+                        "description": f"API Endpoint: {r['endpoint'][:80]}",
+                        "metadata": r,
+                    })
+
+            return entry_points
+
+        except Exception as e:
+            logger.debug(f"JS-API-Hook-Scan fehlgeschlagen: {e}")
+            return []
+
+    async def send_to_entry_point(self, entry_point: dict, message: str) -> Optional[str]:
+        """
+        Universelle Send-Methode für jeden Entry-Point-Typ.
+        Adaptiert die Sende-Strategie basierend auf dem Typ.
+
+        Args:
+            entry_point: Entry-Point-Dict aus detect_all_entry_points()
+            message: Nachricht/Payload zum Senden
+
+        Returns:
+            Antwort-String oder None
+        """
+        ep_type = entry_point.get("type", "")
+        selectors = entry_point.get("selectors", {})
+
+        logger.info(f"Sende an Entry-Point: {ep_type} — {entry_point.get('description', '')[:60]}")
+
+        try:
+            if ep_type == "chatbot_widget":
+                # Standard-Chatbot-Flow
+                self.chatbot_info = ChatbotInfo(
+                    provider=selectors.get("provider", entry_point.get("provider", "generic")),
+                    selector_set=selectors,
+                    is_iframe=entry_point.get("is_iframe", False),
+                )
+                await self.open_chatbot()
+                return await self.send_message(message)
+
+            elif ep_type == "form_app":
+                return await self._send_to_form_entry_point(selectors, message)
+
+            elif ep_type in ("raw_input", "contenteditable"):
+                return await self._send_to_raw_input(selectors, message)
+
+            elif ep_type == "js_sdk":
+                return await self._send_via_js_sdk(selectors, message)
+
+            elif ep_type == "api_endpoint":
+                return await self._send_to_api_endpoint(selectors, message)
+
+            elif ep_type == "hidden_iframe":
+                return await self._send_to_hidden_iframe(entry_point, message)
+
+            else:
+                logger.warning(f"Unbekannter Entry-Point-Typ: {ep_type}")
+                return None
+
+        except Exception as e:
+            logger.error(f"Fehler bei Entry-Point {ep_type}: {e}")
+            return None
+
+    async def _send_to_form_entry_point(self, selectors: dict, message: str) -> Optional[str]:
+        """Sendet an ein Form-App Entry-Point"""
+        input_sel = selectors.get("input", "textarea")
+        submit_text = selectors.get("submit_text", "")
+
+        # Seitentext vor Submit merken
+        text_before = await self.page.evaluate("() => document.body.innerText")
+
+        # Textarea finden und befüllen
+        textarea = await self.page.query_selector(input_sel)
+        if not textarea:
+            textarea = await self.page.query_selector("textarea")
+        if not textarea:
+            return None
+
+        await textarea.click()
+        await textarea.evaluate(
+            'el => { el.value = ""; el.dispatchEvent(new Event("input", {bubbles:true})); }'
+        )
+        await asyncio.sleep(0.2)
+        await textarea.fill(message)
+        await asyncio.sleep(0.5)
+
+        # Submit-Button finden
+        if submit_text:
+            buttons = await self.page.query_selector_all("button")
+            for btn in buttons:
+                try:
+                    text = await btn.text_content()
+                    if text and submit_text.lower() in text.strip().lower():
+                        if await btn.is_visible():
+                            await btn.click()
+                            return await self._wait_for_form_app_response(text_before)
+                except Exception:
+                    continue
+
+        # Fallback: Ersten sichtbaren Button im Formular klicken
+        form = await textarea.evaluate_handle("el => el.closest('form')")
+        if form:
+            btn = await form.query_selector("button, input[type='submit']")
+            if btn:
+                await btn.click()
+                return await self._wait_for_form_app_response(text_before)
+
+        # Enter drücken als letzter Fallback
+        await textarea.press("Enter")
+        return await self._wait_for_form_app_response(text_before)
+
+    async def _send_to_raw_input(self, selectors: dict, message: str) -> Optional[str]:
+        """Sendet an ein rohes Input-Feld"""
+        input_sel = selectors.get("input", "input")
+        text_before = await self.page.evaluate("() => document.body.innerText")
+
+        el = await self.page.query_selector(input_sel)
+        if not el:
+            return None
+
+        await el.click()
+        await el.fill(message)
+        await asyncio.sleep(0.3)
+        await el.press("Enter")
+
+        # Kurz auf Änderung warten
+        await asyncio.sleep(3)
+        text_after = await self.page.evaluate("() => document.body.innerText")
+        diff = self._extract_new_text(text_before, text_after)
+        return diff if diff else None
+
+    async def _send_via_js_sdk(self, selectors: dict, message: str) -> Optional[str]:
+        """Versucht eine Nachricht über ein erkanntes JS SDK zu senden"""
+        sdk_key = selectors.get("sdk_key", "")
+        if not sdk_key:
+            return None
+
+        # Versuche das SDK zu öffnen und eine Nachricht zu senden
+        result = await self.page.evaluate(f"""
+            () => {{
+                const sdk = window['{sdk_key}'];
+                if (!sdk) return null;
+
+                // Verschiedene SDK-APIs probieren
+                if (typeof sdk.open === 'function') sdk.open();
+                else if (typeof sdk.show === 'function') sdk.show();
+                else if (typeof sdk.showWidget === 'function') sdk.showWidget();
+
+                return '{sdk_key} opened';
+            }}
+        """)
+
+        if result:
+            await asyncio.sleep(2)
+            # Nach dem Öffnen versuchen über normalen DOM-Weg zu senden
+            chatbot = await self.detect_chatbot()
+            if chatbot:
+                self.chatbot_info = chatbot
+                await self.open_chatbot()
+                return await self.send_message(message)
+
+        return None
+
+    async def _send_to_api_endpoint(self, selectors: dict, message: str) -> Optional[str]:
+        """Sendet direkt an einen erkannten API-Endpunkt via Browser-Fetch"""
+        endpoint = selectors.get("endpoint", "")
+        if not endpoint:
+            return None
+
+        result = await self.page.evaluate(f"""
+            async () => {{
+                try {{
+                    const payloads = [
+                        {{ message: `{message}` }},
+                        {{ prompt: `{message}` }},
+                        {{ query: `{message}` }},
+                        {{ input: `{message}` }},
+                        {{ text: `{message}` }},
+                    ];
+
+                    for (const payload of payloads) {{
+                        try {{
+                            const resp = await fetch('{endpoint}', {{
+                                method: 'POST',
+                                headers: {{ 'Content-Type': 'application/json' }},
+                                body: JSON.stringify(payload),
+                            }});
+                            if (resp.ok) {{
+                                const data = await resp.text();
+                                return {{ status: resp.status, body: data.substring(0, 2000) }};
+                            }}
+                        }} catch(e) {{ continue; }}
+                    }}
+                    return null;
+                }} catch(e) {{
+                    return {{ error: e.message }};
+                }}
+            }}
+        """)
+
+        if result and result.get("body"):
+            return result["body"]
+        return None
+
+    async def _send_to_hidden_iframe(self, entry_point: dict, message: str) -> Optional[str]:
+        """Versucht ein verstecktes iframe zu aktivieren und darüber zu interagieren"""
+        meta = entry_point.get("metadata", {})
+        iframe_id = meta.get("id", "")
+        has_srcdoc = meta.get("has_srcdoc", False)
+
+        # iframe sichtbar machen
+        await self.page.evaluate(f"""
+            () => {{
+                const selector = '{f"#{iframe_id}" if iframe_id else "iframe[srcdoc]"}';
+                const iframe = document.querySelector(selector);
+                if (iframe) {{
+                    iframe.style.setProperty('display', 'block', 'important');
+                    iframe.style.setProperty('width', '400px', 'important');
+                    iframe.style.setProperty('height', '600px', 'important');
+                    iframe.style.setProperty('opacity', '1', 'important');
+                    iframe.style.setProperty('visibility', 'visible', 'important');
+                    iframe.style.setProperty('pointer-events', 'auto', 'important');
+                    iframe.style.setProperty('position', 'fixed', 'important');
+                    iframe.style.setProperty('bottom', '10px', 'important');
+                    iframe.style.setProperty('right', '10px', 'important');
+                    iframe.style.setProperty('z-index', '999999', 'important');
+                }}
+            }}
+        """)
+        await asyncio.sleep(2)
+
+        # Chatbot-Erkennung innerhalb des sichtbar gemachten iframes
+        chatbot = await self.detect_chatbot()
+        if chatbot:
+            self.chatbot_info = chatbot
+            await self.open_chatbot()
+            return await self.send_message(message)
+
+        return None

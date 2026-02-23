@@ -1,27 +1,27 @@
-# AI Red Team Scanner — Webhook Setup (ohne n8n)
+# Webhook Setup — AI Red Team Scanner
 
-## Architektur
+Trigger scans directly from Notion by checking a checkbox. No n8n, no Zapier, no external services required.
+
+## Architecture
 
 ```
-Notion Checkbox ──→ Notion Automation ──→ Webhook POST ──→ webhook_server.py ──→ Scan ──→ Ergebnis zurück in Notion
+Notion Checkbox → Notion Automation → POST /webhook/notion → webhook_server.py → Scan → Results → Notion
 ```
-
-**Kein n8n, kein Zapier, kein externer Service nötig.**
 
 ---
 
-## 1. Server starten
+## 1. Start the Server
 
-### Option A: Direkt (Entwicklung)
+### Option A: Direct (development)
 
 ```bash
 cd ai_red_team
 pip install -r requirements.txt
-cp .env.example .env   # Dann .env mit echten Werten befüllen
+cp .env.example .env   # Then fill in real values
 python webhook_server.py
 ```
 
-### Option B: Docker (Produktion)
+### Option B: Docker (production)
 
 ```bash
 cd ai_red_team
@@ -44,120 +44,131 @@ services:
     env_file: .env
     ports:
       - "8000:8000"
+      - "8080:8080"   # Live dashboard
+    shm_size: "256m"
     restart: unless-stopped
+    volumes:
+      - ./knowledge_db:/app/knowledge_db
+      - ./logs:/app/logs
+```
+
+```bash
+docker compose up -d
+docker compose logs -f
 ```
 
 ---
 
-## 2. Server öffentlich erreichbar machen
+## 2. Make the Server Publicly Accessible
 
-Notion muss deinen Webhook-Endpoint erreichen können. Optionen:
+Notion needs to reach your webhook endpoint. Options:
 
-### Für Entwicklung: ngrok / Cloudflare Tunnel
+### Development: ngrok / Cloudflare Tunnel
 
 ```bash
 # ngrok
 ngrok http 8000
-# → Gibt dir z.B. https://abc123.ngrok-free.app
+# → https://abc123.ngrok-free.app
 
-# Cloudflare Tunnel (kostenlos, stabiler)
+# Cloudflare Tunnel (free, more stable)
 cloudflared tunnel --url http://localhost:8000
-# → Gibt dir z.B. https://xyz.trycloudflare.com
+# → https://xyz.trycloudflare.com
 ```
 
-### Für Produktion: VPS / Cloud
+### Production: VPS / Cloud
 
-Auf einem VPS (Hetzner, DigitalOcean, etc.):
-
-1. Server mit Docker starten (Option B oben)
-2. Reverse Proxy mit nginx + Let's Encrypt
-3. Domain auf den VPS zeigen lassen
+1. Start the server with Docker (Option B above)
+2. Set up a reverse proxy with nginx + Let's Encrypt
+3. Point your domain at the VPS
 
 ---
 
-## 3. Notion Automation einrichten
+## 3. Set Up Notion Automation
 
-1. **Notion-Datenbank öffnen** (deine Red Team Scanner DB)
-2. **Klicke auf das ⚡ Icon** (Automations) oben rechts
-3. **Neue Automation erstellen:**
+1. Open your Notion database (your Red Team Scanner DB)
+2. Click the ⚡ **Automations** icon (top right)
+3. Click **"New automation"**
+4. Configure the automation:
    - **Trigger:** "When property changes"
      - Property: `🔴 Start Scan`
      - Condition: `is checked`
    - **Action:** "Send webhook request"
-     - URL: `https://dein-server.de/webhook/notion`
+     - URL: `https://your-server.com/webhook/notion`
      - Method: POST
-     - Body: Notion sendet automatisch die Page-ID
-4. **Automation aktivieren** (Toggle on)
+     - Body: Notion sends the page ID automatically
+5. Toggle the automation **ON**
 
 ---
 
-## 4. Testen
+## 4. Test It
 
-### Health Check
+### Health check
 
 ```bash
 curl http://localhost:8000/health
 ```
 
-### Manueller Scan auslösen
+### Trigger a scan manually (without Notion)
 
 ```bash
 curl -X POST http://localhost:8000/webhook/scan \
   -H "Content-Type: application/json" \
-  -d '{"page_id": "deine-notion-page-id"}'
+  -d '{"page_id": "your-notion-page-id"}'
 ```
 
-### Status abfragen
+### Query scan status
 
 ```bash
-# Alle Scans
+# All scans
 curl http://localhost:8000/status
 
-# Bestimmter Scan
-curl http://localhost:8000/status/deine-page-id
+# Specific scan
+curl http://localhost:8000/status/your-page-id
 ```
 
-### Notion-Test
+### End-to-end Notion test
 
-1. Gehe zur Notion-Datenbank
-2. Setze die Checkbox `🔴 Start Scan` bei einem Eintrag
-3. Der Webhook feuert → Server startet Scan → Ergebnisse erscheinen in Notion
-
----
-
-## API-Endpoints
-
-| Endpoint              | Method | Beschreibung                          |
-|----------------------|--------|---------------------------------------|
-| `/webhook/notion`    | POST   | Notion Automation Webhook             |
-| `/webhook/scan`      | POST   | Manueller Scan (mit `page_id`)        |
-| `/status`            | GET    | Alle aktiven/abgeschlossenen Scans    |
-| `/status/{page_id}`  | GET    | Status eines bestimmten Scans         |
-| `/health`            | GET    | Health Check                          |
+1. Go to your Notion database
+2. Check the `🔴 Start Scan` checkbox on any entry
+3. The automation fires → webhook triggers → scan starts → results appear in Notion
 
 ---
 
-## Sicherheit (Optional)
+## API Endpoints
 
-### Webhook-Secret
+| Endpoint | Method | Description |
+|---|---|---|
+| `/webhook/notion` | POST | Notion Automation webhook receiver |
+| `/webhook/scan` | POST | Manual trigger with `page_id` in body |
+| `/status` | GET | All active and completed scans |
+| `/status/{page_id}` | GET | Status of a specific scan |
+| `/health` | GET | Health check |
 
-In `.env` ein `WEBHOOK_SECRET` setzen. Dann muss der Webhook-Sender
-einen `x-webhook-signature` Header mit `sha256=HMAC(body, secret)` mitsenden.
+---
+
+## Security (Optional)
+
+### Webhook Secret
+
+Set `WEBHOOK_SECRET` in `.env`. The sender must then include an `x-webhook-signature` header with the value `sha256=HMAC(body, secret)`.
+
+```env
+WEBHOOK_SECRET=your-random-secret-here
+```
 
 ### Firewall
 
-Nur Port 8000 (oder deinen Proxy-Port) öffnen.
-Idealerweise Notion-IPs whitelisten.
+Only expose port 8000 (or your proxy port) to the internet. Ideally whitelist Notion's IP ranges.
 
 ---
 
-## Vergleich: Vorher (n8n) vs. Nachher (Webhook)
+## Comparison: Polling vs. Webhook
 
-| Aspekt          | n8n                        | Webhook Server              |
-|----------------|----------------------------|-----------------------------|
-| Trigger        | Polling alle 30s           | Echtzeit Event-basiert      |
-| Latenz         | Bis zu 30s Verzögerung     | < 1 Sekunde                 |
-| Dependencies   | n8n Server + Node.js       | Nur Python + FastAPI         |
-| Ressourcen     | ~500MB RAM für n8n         | ~50MB RAM                    |
-| Wartung        | n8n Updates + Workflows    | Ein Python-File              |
-| Kosten         | n8n Cloud oder Self-Host   | Kostenlos                    |
+| Aspect | Polling Mode | Webhook Mode |
+|---|---|---|
+| Trigger | Checks Notion every 30s | Real-time, event-driven |
+| Latency | Up to 30s delay | < 1 second |
+| External dependencies | None | Public URL required |
+| Setup complexity | None | ngrok or VPS needed |
+| Reliability | Always works locally | Depends on tunnel/server uptime |
+| Best for | Local dev, quick tests | Production, daily use |

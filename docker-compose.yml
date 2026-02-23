@@ -1,0 +1,162 @@
+# REDSWARM — Docker Compose (Multi-Service)
+# ==========================================
+# Quick Start:
+#   1. cp .env.example .env  →  Secrets anpassen
+#   2. docker compose up -d
+#   3. Browser: http://localhost
+#
+# Architektur:
+#   nginx (80/443) → frontend (React) + backend (FastAPI)
+#   backend        → redis (Message Broker)
+#   agents         → registrieren sich automatisch beim backend
+
+services:
+
+  # ── Redis (Message Broker fuer Events) ──────
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  # ── Backend (FastAPI) ───────────────────────
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
+    environment:
+      REDIS_URL:          "redis://redis:6379"
+      BACKEND_URL:        "http://backend:8000"
+      REDSWARM_API_KEY:   "${REDSWARM_API_KEY:-changeme}"
+      OPENAI_API_KEY:     "${OPENAI_API_KEY:-}"
+      ANTHROPIC_API_KEY:  "${ANTHROPIC_API_KEY:-}"
+    networks:
+      - internal
+      - agents
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  # ── Frontend (React, gebaut mit Vite) ───────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    networks:
+      - internal
+
+  # ── Nginx Reverse Proxy ─────────────────────
+  nginx:
+    image: nginx:alpine
+    restart: unless-stopped
+    ports:
+      - "${REDSWARM_PORT:-80}:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    networks:
+      - internal
+    depends_on:
+      - frontend
+      - backend
+
+  # ── Agent: Recon (Aufklaerung) ──────────────
+  agent-recon:
+    build:
+      context: .
+      dockerfile: agents/recon/Dockerfile
+    restart: unless-stopped
+    environment:
+      BACKEND_URL:       "http://backend:8000"
+      AGENT_BASE_URL:    "http://agent-recon:8100"
+      AGENT_PORT:        "8100"
+      REDSWARM_API_KEY:  "${REDSWARM_API_KEY:-changeme}"
+      OPENAI_API_KEY:    "${OPENAI_API_KEY:-}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+    networks:
+      - internal
+      - agents
+    depends_on:
+      backend:
+        condition: service_healthy
+
+  # ── Agent: Exploit (Angriff) ────────────────
+  agent-exploit:
+    build:
+      context: .
+      dockerfile: agents/exploit/Dockerfile
+    restart: unless-stopped
+    environment:
+      BACKEND_URL:       "http://backend:8000"
+      AGENT_BASE_URL:    "http://agent-exploit:8101"
+      AGENT_PORT:        "8101"
+      REDSWARM_API_KEY:  "${REDSWARM_API_KEY:-changeme}"
+      OPENAI_API_KEY:    "${OPENAI_API_KEY:-}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+    networks:
+      - internal
+      - agents
+    depends_on:
+      backend:
+        condition: service_healthy
+
+  # ── Agent: Execution (Ausfuehrung) ──────────
+  agent-execution:
+    build:
+      context: .
+      dockerfile: agents/execution/Dockerfile
+    restart: unless-stopped
+    environment:
+      BACKEND_URL:       "http://backend:8000"
+      AGENT_BASE_URL:    "http://agent-execution:8102"
+      AGENT_PORT:        "8102"
+      REDSWARM_API_KEY:  "${REDSWARM_API_KEY:-changeme}"
+      OPENAI_API_KEY:    "${OPENAI_API_KEY:-}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+    networks:
+      - internal
+      - agents
+    depends_on:
+      backend:
+        condition: service_healthy
+
+  # ── Agent: C4 (Command & Control) ───────────
+  agent-c4:
+    build:
+      context: .
+      dockerfile: agents/c4/Dockerfile
+    restart: unless-stopped
+    environment:
+      BACKEND_URL:       "http://backend:8000"
+      AGENT_BASE_URL:    "http://agent-c4:8103"
+      AGENT_PORT:        "8103"
+      REDSWARM_API_KEY:  "${REDSWARM_API_KEY:-changeme}"
+      OPENAI_API_KEY:    "${OPENAI_API_KEY:-}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+    networks:
+      - internal
+      - agents
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  redis_data:
+
+networks:
+  internal:
+    internal: true
+  agents:

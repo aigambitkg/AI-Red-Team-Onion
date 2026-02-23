@@ -1,4 +1,4 @@
-# Setup Guide — AI Red Team Scanner
+# Setup Guide — AI Red Team Scanner v3.0
 
 Complete step-by-step installation and configuration guide.
 
@@ -11,10 +11,11 @@ Complete step-by-step installation and configuration guide.
 3. [Notion Setup](#3-notion-setup)
 4. [Configuration](#4-configuration)
 5. [Running Your First Scan](#5-running-your-first-scan)
-6. [Webhook Mode Setup](#6-webhook-mode-setup)
-7. [Knowledge Base Setup](#7-knowledge-base-setup)
-8. [Docker Deployment](#8-docker-deployment)
-9. [Troubleshooting](#9-troubleshooting)
+6. [Swarm Mode Setup](#6-swarm-mode-setup)
+7. [Webhook Mode Setup](#7-webhook-mode-setup)
+8. [Knowledge Base Setup](#8-knowledge-base-setup)
+9. [Docker Deployment](#9-docker-deployment)
+10. [Troubleshooting](#10-troubleshooting)
 
 ---
 
@@ -131,8 +132,8 @@ The 32-character string after the last `-` and before `?v=` is your `NOTION_DATA
 Example:
 ```
 https://www.notion.so/myworkspace/AI-Red-Team-e423a756ba8149f3b6dc5afa759ea40?v=abc
-                                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-                                                   This is your NOTION_DATABASE_ID
+                                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                                               This is your NOTION_DATABASE_ID
 ```
 
 ---
@@ -178,6 +179,7 @@ class ScanConfig:
 | Fast API | 1.0 | 10.0 | — |
 | Slow chatbot | 3.0 | 30.0 | Increase if timeouts occur |
 | Rate-limited target | 5.0 | 20.0 | Avoid triggering blocks |
+| Swarm deep scan | 2.0 | 20.0 | Agents self-throttle |
 
 ---
 
@@ -191,14 +193,14 @@ python3 main.py --mode scan --url https://your-target.com --type chatbot
 
 Watch the live dashboard at `http://localhost:8080`.
 
-After the scan, open your Notion database — a new entry will have appeared with the full report.
+After the scan, open your Notion database — a new entry will appear with the full report.
 
 ### Scan options
 
 ```bash
 python3 main.py --mode scan \
   --url https://your-target.com \
-  --type chatbot \           # chatbot | api | both
+  --type chatbot \           # chatbot | api | both | agent | rag
   --no-browser \             # Skip browser tests (API only)
   --no-api \                 # Skip API tests (browser only)
   --no-dashboard \           # Don't start live dashboard
@@ -220,25 +222,103 @@ python3 main.py --mode scan \
 ### Stopping a running scan
 
 ```bash
-# Method 1: File trigger (simplest)
-echo "stop" > /tmp/redteam_kill
-
-# Method 2: Unix signal
-kill -SIGUSR1 $(pgrep -f "python3 main.py")
-
-# Method 3: Click "EMERGENCY STOP" button in dashboard at http://localhost:8080
+echo "stop" > /tmp/redteam_kill                   # File trigger
+kill -SIGUSR1 $(pgrep -f "python3 main.py")       # Unix signal
+# Or: click "EMERGENCY STOP" in the dashboard at http://localhost:8080
 ```
 
 ---
 
-## 6. Webhook Mode Setup
+## 6. Swarm Mode Setup
+
+The Swarm is the autonomous multi-agent Red Team introduced in v3.0. No additional setup is required beyond the base installation — the Swarm uses the same Playwright, Knowledge Base, and Notion infrastructure.
+
+### How the Swarm works
+
+When you start `--mode swarm`, the following happens automatically:
+
+1. **SwarmOrchestrator** initializes a shared **Blackboard** (SQLite) and four agents
+2. **C4 agent** defines the operation objective and selects the Kill Chain strategy
+3. **Recon agent** begins system fingerprinting and posts intel to the Blackboard
+4. **Exploit agent** reads the intel and develops targeted payloads
+5. **Execution agent** delivers attacks and posts results back to the Blackboard
+6. The **feedback loop** runs continuously: Exploit agent refines payloads based on Execution results
+7. C4 monitors progress, pivots strategy if needed, and generates the final report
+
+All agents run as concurrent asyncio tasks and communicate exclusively through the Blackboard — no direct agent-to-agent calls.
+
+### Basic swarm usage
+
+```bash
+# Simplest form — C4 auto-selects strategy
+python3 main.py --mode swarm --url https://target.com --type chatbot
+
+# Target an agentic system (tool use, AutoGPT-style)
+python3 main.py --mode swarm --url https://target.com --type agent
+
+# Target a RAG pipeline
+python3 main.py --mode swarm --url https://target.com --type rag
+```
+
+### Swarm CLI options
+
+| Flag | Default | Description |
+|---|---|---|
+| `--url` | (required) | Target URL — repeat for multiple targets |
+| `--type` | `chatbot` | Target type: `chatbot` / `api` / `agent` / `rag` / `both` |
+| `--scan-depth` | `standard` | `quick` (recon only) / `standard` / `deep` (all phases) |
+| `--objective` | `Vollständige Sicherheitsanalyse` | Operation goal — passed to C4 for strategy selection |
+| `--swarm-timeout` | `30` | Operation timeout in minutes |
+
+### Scan depth guide
+
+| Depth | Phases Active | Typical Duration | Use Case |
+|---|---|---|---|
+| `quick` | 1 (Recon only) | 5–10 min | Fast surface scan, CI/CD integration |
+| `standard` | 1–3 (Recon, Poisoning, Hijacking) | 15–30 min | Default full assessment |
+| `deep` | 1–6 (Full Kill Chain) | 30–90 min | Red Team engagement, compliance testing |
+
+### Multi-target operations
+
+Pass `--url` multiple times to run a coordinated swarm operation across several targets:
+
+```bash
+python3 main.py --mode swarm \
+  --url https://chatbot.target.com \
+  --url https://api.target.com \
+  --type chatbot \
+  --scan-depth deep \
+  --objective "Identify lateral movement paths between chatbot and API layer" \
+  --swarm-timeout 60
+```
+
+The C4 agent receives all targets and can correlate findings across them — enabling the multi-vector convergence attack pattern from the Kill Chain.
+
+### Reading the swarm report
+
+After completion, two outputs are generated:
+- **Terminal output:** Summary with entry count, duration, and target count
+- **Report file:** `logs/swarm_report_<operation_id>.md` — full C4-generated Markdown report including timeline, findings per phase, and recommendations
+- **Notion** (if configured): A new entry per target with status `✅ Abgeschlossen` and the operation ID
+
+### Swarm + Knowledge Base
+
+The Swarm tightly integrates with the Knowledge Base:
+- The **Recon agent** queries the KB for known vulnerabilities of the detected target type
+- The **Exploit agent** retrieves highest-success-rate payloads from the KB and refines them
+- After execution, results are written back into the KB, improving future swarm operations
+- The entire swarm becomes smarter with every operation
+
+---
+
+## 7. Webhook Mode Setup
 
 Webhook mode lets you trigger scans directly from Notion — just check a checkbox.
 
 ### Architecture
 
 ```
-Notion Checkbox ──→ Notion Automation ──→ POST /webhook/notion ──→ Scanner ──→ Results → Notion
+Notion Checkbox → Notion Automation → POST /webhook/notion → Scanner → Results → Notion
 ```
 
 ### Step 1: Start the webhook server
@@ -264,7 +344,7 @@ cloudflared tunnel --url http://localhost:8000
 ```
 
 **Production (VPS):**
-Deploy using Docker (see [Section 8](#8-docker-deployment)) and point your domain at it.
+Deploy using Docker (see [Section 9](#9-docker-deployment)) and point your domain at it.
 
 ### Step 3: Set up Notion Automation
 
@@ -300,11 +380,13 @@ Now go to Notion, check `🔴 Start Scan` on any entry — the scan will start w
 | `/status/{page_id}` | GET | Status of specific scan |
 | `/health` | GET | Health check |
 
+→ Full webhook setup details: [SETUP_WEBHOOK.md](SETUP_WEBHOOK.md)
+
 ---
 
-## 7. Knowledge Base Setup
+## 8. Knowledge Base Setup
 
-The knowledge base starts empty and grows automatically with every scan. You can also seed it with your own data.
+The knowledge base starts empty and grows automatically with every scan and swarm operation. You can also seed it with your own data.
 
 ### Import your own payloads or knowledge base
 
@@ -332,28 +414,19 @@ kb.import_raw_payloads(
 ### Knowledge base commands
 
 ```bash
-# Show statistics
-python3 main.py --kb-stats
-
-# Search (text search, or semantic if chromadb is installed)
-python3 main.py --kb-search "prompt injection"
-python3 main.py --kb-search "rate limit bypass technique"
-
-# Export for sharing
-python3 main.py --kb-export my_export.json
-
-# Import community knowledge base
-python3 main.py --kb-import community_kb.json
-
-# Rebuild vector index (needed after manual SQLite edits)
-python3 main.py --kb-rebuild
+python3 main.py --kb-stats                              # Show statistics
+python3 main.py --kb-search "prompt injection"          # Text or semantic search
+python3 main.py --kb-search "rate limit bypass"
+python3 main.py --kb-export my_export.json              # Export for sharing
+python3 main.py --kb-import community_kb.json           # Import
+python3 main.py --kb-rebuild                            # Rebuild vector index
 ```
 
 ### Enable semantic RAG search
 
 ```bash
 pip install chromadb sentence-transformers
-# That's it — automatically active on next run
+# Automatically active on next run — no config change needed
 ```
 
 **Verify it's working:**
@@ -376,7 +449,7 @@ print(f"Found {len(results)} results via {'RAG' if kb._get_rag() else 'text sear
 
 ---
 
-## 8. Docker Deployment
+## 9. Docker Deployment
 
 ### Single container
 
@@ -413,7 +486,7 @@ services:
     restart: unless-stopped
     volumes:
       - ./knowledge_db:/app/knowledge_db   # Persist knowledge base
-      - ./logs:/app/logs                   # Persist logs
+      - ./logs:/app/logs                   # Persist logs + swarm reports
 ```
 
 ```bash
@@ -423,16 +496,15 @@ docker compose logs -f
 
 ### Persist the knowledge base across container restarts
 
-Mount the `knowledge_db/` directory as shown in the compose file above. Without this, the KB resets on every container restart.
+Mount the `knowledge_db/` directory as shown above. Without this, the KB — including all swarm learnings — resets on every container restart.
 
 ---
 
-## 9. Troubleshooting
+## 10. Troubleshooting
 
 ### "Chrome not found" / Playwright error
 
 ```bash
-# Reinstall browsers
 playwright install chrome
 playwright install chromium
 playwright install-deps
@@ -462,13 +534,27 @@ Increase `delay_between_tests_sec` in `config.py`:
 delay_between_tests_sec: float = 5.0  # Was 2.0
 ```
 
+### Swarm finishes too quickly (timeout hit)
+
+Increase the timeout or reduce depth:
+```bash
+python3 main.py --mode swarm --url ... --swarm-timeout 60   # 60 minutes
+python3 main.py --mode swarm --url ... --scan-depth quick   # Quick mode
+```
+
+### Swarm Blackboard SQLite errors
+
+The Blackboard database is stored per operation in memory or at `logs/blackboard_<op_id>.sqlite3`. If you see lock errors, ensure no two swarm processes are using the same operation ID:
+```bash
+ls logs/blackboard_*.sqlite3     # List existing blackboards
+```
+
 ### RAG / ChromaDB import errors
 
 ```bash
-# Make sure you installed the optional deps
 pip install chromadb sentence-transformers
 
-# If issues persist, fall back to text search (just don't install chromadb)
+# If issues persist, fall back to text search:
 pip uninstall chromadb sentence-transformers
 ```
 
