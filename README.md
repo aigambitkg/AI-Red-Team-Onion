@@ -9,11 +9,12 @@ Four specialized agents, six attack phases, LLM-powered reasoning — fully cont
 
 [![Version](https://img.shields.io/badge/version-1.3.1-red)](CHANGELOG.md)
 [![Python](https://img.shields.io/badge/Python-3.12+-blue?logo=python)](https://python.org)
+[![Ollama](https://img.shields.io/badge/-Ollama-000000?style=flat&logo=ollama&logoColor=white)](https://ollama.com/)
 [![Docker](https://img.shields.io/badge/Docker-ready-2496ED?logo=docker)](docker-compose.yml)
 [![License](https://img.shields.io/badge/License-MIT-yellow)](LICENSE)
 [![Made by AI-Gambit](https://img.shields.io/badge/Made%20by-AI--Gambit-red)](https://ai-gambit.com)
 
-[Quick Start](#quick-start) · [Architecture](#architecture) · [Cognitive Layer](#cognitive-layer) · [Attack Modules](#attack-modules) · [Setup Guide](SETUP.md) · [Changelog](CHANGELOG.md)
+[Quick Start](#quick-start) · [Architecture](#architecture) · [Cognitive Layer](#cognitive-layer) · [Attack Modules](#attack-modules) · [Setup Guide](SETUP.md) · [Changelog](CHANGELOG.md) 
 
 </div>
 
@@ -71,7 +72,7 @@ AI Red Team Onion is an open-source framework for **automated adversarial testin
 ```bash
 # 1. Clone the repository
 git clone https://github.com/aigambitkg/ai-red-team-onion.git
-cd redswarm
+cd ai_red_team
 
 # 2. Configure environment
 cp .env.example .env
