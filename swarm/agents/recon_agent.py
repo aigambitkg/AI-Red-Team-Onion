@@ -362,6 +362,47 @@ class ReconAgent(SwarmAgent):
 
         fingerprint["timestamp"] = datetime.now().isoformat()
         self._system_fingerprint = fingerprint
+
+        # ── Tier-2 Integration: TechStackMapper ──────────────────────────
+        # Nach dem Fingerprinting: Erkannte Technologien auf Blackboard posten
+        # damit der Exploit-Agent adaptive Payloads generieren kann
+        all_techs = (
+            fingerprint.get("technologies", [])
+            + fingerprint.get("frameworks", [])
+        )
+        if all_techs:
+            try:
+                from payloads.tier2_adaptive import TechStackMapper
+                mapper = TechStackMapper()
+                mapped_categories = mapper.map_to_payloads(all_techs)
+                if mapped_categories:
+                    hint_lines = [f"TechStack-Mapping für {url}:"]
+                    for cat, payloads_list in mapped_categories.items():
+                        hint_lines.append(f"  {cat}: {len(payloads_list)} Payloads verfügbar")
+                    self.post_intel(
+                        title=f"TechStack-Hints: {url}",
+                        content="\n".join(hint_lines),
+                        kill_chain_phase=1,
+                        attack_vector="tech_mapping",
+                        confidence=0.6,
+                        priority=2,
+                        target_system=url,
+                        tags=["techstack", "tier2_hint", "mapping"],
+                        metadata={
+                            "tech_stack": all_techs,
+                            "mapped_categories": list(mapped_categories.keys()),
+                            "defense_indicators": fingerprint.get("security_features", []),
+                        },
+                    )
+                    self.logger.info(
+                        f"TechStack-Mapping: {len(all_techs)} Techs → "
+                        f"{len(mapped_categories)} Attack-Kategorien"
+                    )
+            except ImportError:
+                self.logger.debug("Tier-2 TechStackMapper nicht verfügbar")
+            except Exception as e:
+                self.logger.warning(f"TechStackMapper Fehler: {e}")
+
         return fingerprint
 
     async def _scan_vulnerabilities(self, url: str, target_type: str) -> List[Dict]:

@@ -52,6 +52,17 @@ knowledge_db/
 *.sqlite
 
 # ============================================================
+# Payload-Artefakte (Runtime-generiert, nicht committen)
+# ============================================================
+# Tier-2 adaptive Payloads (LLM-generiert, target-spezifisch)
+payloads/generated/
+payloads/.cache/
+# Tier-3 Operation-Pläne (enthalten Target-Daten)
+payloads/operations/
+# Fuzzer-Outputs
+payloads/fuzz_results/
+
+# ============================================================
 # Playwright / Browser
 # ============================================================
 .playwright/
@@ -94,6 +105,13 @@ redis_data/
 docker-compose.override.yml
 
 # ============================================================
+# SQLite Datenbank (wird lokal erstellt, nicht committen)
+# ============================================================
+data/*.db
+data/*.db-wal
+data/*.db-shm
+
+# ============================================================
 # SSL-Zertifikate (falls lokal)
 # ============================================================
 nginx/certs/
@@ -109,3 +127,17 @@ nginx/certs/
 *.bak
 *.tmp
 *.orig
+
+# ============================================================
+# Pytest / Test-Artefakte
+# ============================================================
+.pytest_cache/
+htmlcov/
+.coverage
+coverage.xml
+
+# ============================================================
+# ChromaDB (RAG-Vektordatenbank)
+# ============================================================
+chroma_data/
+.chroma/

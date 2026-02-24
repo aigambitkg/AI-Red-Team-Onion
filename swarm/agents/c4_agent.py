@@ -128,6 +128,10 @@ class C4Agent(SwarmAgent):
             if eval_cycle % 6 == 0:
                 await self._check_agent_health()
 
+            # Tier-3 strategische Opportunities (alle 5 Zyklen)
+            if eval_cycle % 5 == 0:
+                await self._detect_tier3_opportunity()
+
             # Tasks abarbeiten
             await self.process_pending_tasks()
 
@@ -559,6 +563,112 @@ class C4Agent(SwarmAgent):
             self.logger.info(f"🚨 ALERT von {msg.sender}: {msg.subject}")
         elif msg.message_type == "request":
             self.logger.info(f"Anfrage von {msg.sender}: {msg.subject}")
+
+    # ─── TIER-3 STRATEGISCHE OPERATIONS-ERKENNUNG ────────────────────────────
+
+    async def _detect_tier3_opportunity(self):
+        """
+        Erkennt Gelegenheiten für Tier-3 strategische Operationen.
+        Wird periodisch aus der Hauptschleife aufgerufen.
+
+        Prüft:
+        1. Genug Findings für Exploit-Chain-Konstruktion?
+        2. Business-Logic-Muster in den Intel-Daten?
+        3. Koordinierte Schwarm-Operation sinnvoll?
+        """
+        # Findings sammeln
+        all_intel = self.blackboard.read(section="intel", limit=50)
+        all_exploits = self.read_exploits()
+        all_executions = self.blackboard.read(section="execution", limit=30)
+
+        successes = [e for e in all_executions if e.metadata.get("success")]
+        high_vulns = [i for i in all_intel if i.priority <= 1 and i.attack_vector]
+
+        # Bedingung 1: Mehrere Schwachstellen am gleichen Target → Chain-Opportunity
+        target_vulns: Dict[str, List] = {}
+        for intel in high_vulns:
+            t = intel.target_system or "unknown"
+            target_vulns.setdefault(t, []).append(intel)
+
+        for target, vulns in target_vulns.items():
+            if len(vulns) >= 3:
+                # Genug Schwachstellen für eine Exploit-Chain
+                try:
+                    from payloads.tier3_orchestrator import SwarmOperationOrchestrator
+                    orchestrator = SwarmOperationOrchestrator(blackboard=self.blackboard)
+
+                    findings = []
+                    for v in vulns:
+                        findings.append({
+                            "id": v.id,
+                            "title": v.title,
+                            "vector": v.attack_vector,
+                            "severity": v.metadata.get("severity", "medium") if v.metadata else "medium",
+                            "confidence": v.confidence,
+                        })
+
+                    plan = orchestrator.plan_operation(
+                        goal=f"Multi-Vector-Angriff auf {target}",
+                        findings=findings,
+                        available_agents=["recon", "exploit", "execution", "c4"],
+                    )
+
+                    if plan and plan.phases:
+                        self.post_strategy(
+                            title=f"Tier-3 Operation: {target}",
+                            content=(
+                                f"## Koordinierte Schwarm-Operation\n"
+                                f"Ziel: {target}\n"
+                                f"Phasen: {len(plan.phases)}\n"
+                                f"Beteiligte Schwachstellen: {len(vulns)}\n"
+                                f"Vektoren: {', '.join(set(v.attack_vector for v in vulns if v.attack_vector))}\n\n"
+                                f"Plan-ID: {plan.plan_id}\n"
+                                f"Status: {plan.status}"
+                            ),
+                            priority=0,
+                            metadata={
+                                "tier3_operation": True,
+                                "plan_id": plan.plan_id,
+                                "target": target,
+                                "vuln_count": len(vulns),
+                            },
+                        )
+                        self.logger.info(
+                            f"Tier-3 Operation geplant: {target} "
+                            f"({len(vulns)} Schwachstellen, {len(plan.phases)} Phasen)"
+                        )
+
+                except ImportError:
+                    self.logger.debug("Tier-3 Orchestrator nicht verfügbar")
+                except Exception as e:
+                    self.logger.warning(f"Tier-3 Erkennung Fehler: {e}")
+
+        # Bedingung 2: Erfolgreicher Angriff → Persistenz mit adaptiver Rotation
+        if successes and self._kill_chain_progress.get(4) == "pending":
+            try:
+                from payloads.tier3_adaptive_persistence import AdaptivePersistenceManager
+                self.logger.info(
+                    f"Tier-3 Persistenz-Opportunity: {len(successes)} erfolgreiche Angriffe"
+                )
+                # Task an Execution-Agent für Tier-3-Persistenz
+                self.blackboard.create_task(
+                    title=f"tier3_persistence: Adaptive Persistenz etablieren",
+                    content=(
+                        f"Tier-3 Adaptive Persistenz mit automatischer Rotation.\n"
+                        f"Basis: {len(successes)} erfolgreiche Angriffe.\n"
+                        f"Targets: {', '.join(set(s.target_system for s in successes if s.target_system))}"
+                    ),
+                    author="c4",
+                    assigned_to="execution",
+                    priority=1,
+                    kill_chain_phase=4,
+                    metadata={
+                        "tier3_persistence": True,
+                        "success_count": len(successes),
+                    },
+                )
+            except ImportError:
+                pass
 
     # ─── CONVENIENCE ──────────────────────────────────────────────────────────
 

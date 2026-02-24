@@ -25,6 +25,17 @@ from swarm.blackboard import (
     Blackboard, BlackboardEntry, AgentMessage,
     Section, Priority, TaskStatus
 )
+from swarm.cognition.engine import CognitiveEngine, COGNITIVE_ENABLED
+from swarm.cognition.memory import AgentMemory
+from swarm.cognition.reflector import Reflector
+from swarm.cognition.planner import TaskPlanner
+
+try:
+    from swarm.validation.mixin import ValidationMixin
+    _VALIDATION_AVAILABLE = True
+except ImportError:
+    _VALIDATION_AVAILABLE = False
+    ValidationMixin = type('ValidationMixin', (), {})  # Stub
 
 logger = logging.getLogger("RedTeam.Swarm")
 
@@ -58,7 +69,136 @@ class AgentCapability:
     tools_required: List[str] = field(default_factory=list)
 
 
-class SwarmAgent(ABC):
+class CognitiveMixin:
+    """
+    Mixin für kognitive Fähigkeiten — wird von SwarmAgent geerbt.
+
+    Gibt jedem Agenten Zugang zu:
+    - CognitiveEngine:  LLM-basiertes Reasoning (CoT, Exploit-Gen, Theory of Mind)
+    - AgentMemory:      Episodisch/Semantisch/Prozedural (SQLite-persistent)
+    - Reflector:        ReAct Self-Correction Zyklus
+    - TaskPlanner:      Hierarchical Task Decomposition + Re-Planning
+
+    Initialisierung ist lazy — Module werden erst beim ersten Zugriff erzeugt.
+    Kann komplett deaktiviert werden via REDSWARM_COGNITIVE_ENABLED=false.
+    """
+
+    def _init_cognition(self, agent_id: str):
+        """Kognitive Subsysteme lazy initialisieren."""
+        self._cognitive_initialized = False
+        self._agent_id_cog = agent_id
+        self._engine: Optional[CognitiveEngine] = None
+        self._memory: Optional[AgentMemory] = None
+        self._reflector: Optional[Reflector] = None
+        self._planner: Optional[TaskPlanner] = None
+
+    def _ensure_cognition(self):
+        """Lazy-Init: Subsysteme beim ersten Zugriff starten."""
+        if self._cognitive_initialized:
+            return
+        if not COGNITIVE_ENABLED:
+            return
+        try:
+            self._engine = CognitiveEngine(agent_id=self._agent_id_cog)
+            self._memory = AgentMemory(agent_id=self._agent_id_cog)
+            self._reflector = Reflector(
+                engine=self._engine,
+                memory=self._memory,
+                agent_id=self._agent_id_cog,
+            )
+            self._planner = TaskPlanner(
+                engine=self._engine,
+                memory=self._memory,
+                agent_id=self._agent_id_cog,
+            )
+            self._cognitive_initialized = True
+            logger.info(f"[{self._agent_id_cog}] Kognitive Systeme aktiviert")
+        except Exception as e:
+            logger.warning(f"[{self._agent_id_cog}] Cognition init failed: {e}")
+
+    # ─── Convenience Properties ───────────────────────────────────────────
+
+    @property
+    def engine(self) -> Optional[CognitiveEngine]:
+        """LLM Reasoning Engine."""
+        self._ensure_cognition()
+        return self._engine
+
+    @property
+    def memory(self) -> Optional[AgentMemory]:
+        """Agent Memory (episodisch, semantisch, prozedural)."""
+        self._ensure_cognition()
+        return self._memory
+
+    @property
+    def reflector(self) -> Optional[Reflector]:
+        """ReAct Self-Reflection & Correction."""
+        self._ensure_cognition()
+        return self._reflector
+
+    @property
+    def planner(self) -> Optional[TaskPlanner]:
+        """Hierarchischer Task-Planer."""
+        self._ensure_cognition()
+        return self._planner
+
+    @property
+    def has_cognition(self) -> bool:
+        """Prüft ob kognitive Fähigkeiten verfügbar sind."""
+        return COGNITIVE_ENABLED and self._cognitive_initialized
+
+    # ─── High-Level Cognitive Actions ─────────────────────────────────────
+
+    async def think(self, prompt: str, context: str = "") -> str:
+        """
+        Einfacher LLM-Call: Agent 'denkt' über etwas nach.
+        Returns: LLM-generierte Antwort als String.
+        """
+        if not self.engine:
+            return ""
+        result = await self.engine.reason(prompt, context)
+        return result.response if result else ""
+
+    async def remember_action(
+        self, action: str, target: str, result: str, success: bool,
+        attack_vector: str = "", kill_chain_phase: int = 0,
+    ):
+        """Aktion im episodischen Gedächtnis speichern."""
+        if not self.memory:
+            return
+        self.memory.store_episode(
+            action=action,
+            target=target,
+            result=result,
+            success=success,
+            attack_vector=attack_vector,
+            kill_chain_phase=kill_chain_phase,
+        )
+
+    async def reflect_on_action(
+        self, goal: str, action: str, observation: str,
+    ):
+        """
+        ReAct-Zyklus: Reflektiere über eine Aktion und erhalte Verbesserungen.
+        Returns: Reflection-Objekt oder None.
+        """
+        if not self.reflector:
+            return None
+        return await self.reflector.reflect(
+            goal=goal, action_taken=action, observation=observation,
+        )
+
+    async def plan_attack(self, goal: str, target: str) -> Optional[Any]:
+        """
+        Erstelle einen hierarchischen Angriffsplan.
+        Returns: ActionPlan oder None.
+        """
+        if not self.planner:
+            return None
+        return await self.planner.create_plan(goal=goal, target=target)
+
+
+class SwarmAgent(CognitiveMixin, ValidationMixin, ABC):
     """
     Abstrakte Basisklasse für alle Swarm-Agenten.
 
@@ -68,6 +208,9 @@ class SwarmAgent(ABC):
     - Status-Management
     - Inter-Agent-Messaging
     - Heartbeat / Liveness
+    - Kognitive Fähigkeiten (LLM Reasoning, Memory, Reflection, Planning)
+    - Validierung & Anti-Halluzination (PayloadValidator, ResultVerifier,
+      ConfidenceCalibrator, ConsensusValidator)
     """
 
     def __init__(
@@ -93,6 +236,9 @@ class SwarmAgent(ABC):
         self._last_heartbeat: Optional[str] = None
 
         self.logger = logging.getLogger(f"RedTeam.{self.name}")
+
+        # Kognitive Subsysteme initialisieren (lazy)
+        self._init_cognition(agent_id=self.name)
 
         # Blackboard-Subscriptions einrichten
         self._setup_subscriptions()
@@ -492,8 +638,8 @@ class SwarmAgent(ABC):
         ))
 
     def get_status_report(self) -> Dict[str, Any]:
-        """Statusbericht des Agenten"""
-        return {
+        """Statusbericht des Agenten (inkl. kognitive Systeme)"""
+        report = {
             "name": self.name,
             "role": self.role.value,
             "status": self.status.value,
@@ -502,4 +648,9 @@ class SwarmAgent(ABC):
             "uptime_seconds": self.uptime_seconds,
             "last_heartbeat": self._last_heartbeat,
             "capabilities": [c.name for c in self.capabilities],
+            "cognitive_enabled": self.has_cognition,
         }
+        if self.has_cognition and self._memory:
+            stats = self._memory.get_stats()
+            report["memory_stats"] = stats
+        return report

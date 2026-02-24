@@ -4,6 +4,9 @@ REDSWARM Backend — FastAPI
 Vollständig dynamisches Backend. Keine hardcodierten Agents oder Zieltypen.
 Agents registrieren sich selbst. Die UI rendert nur was hier verfügbar ist.
 
+Persistenz: SQLite (zero-config, überlebt Neustarts)
+Live-Updates: WebSocket + optionales Redis
+
 Kommunikationsfluss:
   1. Agents registrieren sich via POST /agents/register
   2. UI holt verfügbare Agents via GET /agents
@@ -28,6 +31,13 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Back
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+from db import (
+    async_init_db,
+    async_save_agent, async_get_all_agents, async_get_agent,
+    async_delete_agent, async_update_agent_status,
+    async_save_mission, async_get_all_missions, async_get_mission,
+)
+
 
 # ─────────────────────────────────────────────
 # CONFIG (via Env-Variablen in Produktion)
@@ -46,16 +56,36 @@ redis_client: aioredis.Redis = None
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global redis_client
+
+    # SQLite initialisieren (erstellt DB + Tabellen automatisch)
+    await async_init_db()
+
+    # Redis (optional — nur für Event-Replay)
     try:
         redis_client = await aioredis.from_url(REDIS_URL, decode_responses=True)
         await redis_client.ping()
     except Exception:
         redis_client = None
+
+    # Agents aus DB in Memory-Cache laden (für schnellen Zugriff während Missions)
+    agents = await async_get_all_agents()
+    for a in agents:
+        _agent_cache[a["agent_id"]] = a
+
+    # Missionen aus DB laden (nur laufende)
+    missions = await async_get_all_missions()
+    for m in missions:
+        if m["status"] == "running":
+            m["status"] = "interrupted"  # War noch "running" → Backend wurde neu gestartet
+            await async_save_mission(m)
+        active_missions[m["id"]] = m
+
     yield
+
     if redis_client:
         await redis_client.aclose()
 
-app = FastAPI(title="REDSWARM API", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="AI Red Team Onion API", version="1.2.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -66,11 +96,11 @@ app.add_middleware(
 
 
 # ─────────────────────────────────────────────
-# IN-MEMORY STORES (in Prod: Postgres/Redis)
+# IN-MEMORY CACHES (backed by SQLite)
 # ─────────────────────────────────────────────
-registered_agents: dict[str, dict] = {}   # agent_id → AgentRegistration
-active_missions:   dict[str, dict] = {}   # mission_id → MissionState
-ws_connections:    dict[str, list[WebSocket]] = {}  # mission_id → [ws, ...]
+_agent_cache:     dict[str, dict] = {}   # agent_id → AgentData (synced with DB)
+active_missions:  dict[str, dict] = {}   # mission_id → MissionState
+ws_connections:   dict[str, list[WebSocket]] = {}  # mission_id → [ws, ...]
 
 
 # ─────────────────────────────────────────────
@@ -170,23 +200,33 @@ async def register_agent(reg: AgentRegistration):
     """
     Agents rufen diesen Endpoint beim Start auf.
     Danach erscheinen sie automatisch in der UI.
+    Daten werden in SQLite persistiert (überlebt Neustarts).
     """
-    registered_agents[reg.agent_id] = reg.model_dump()
-    registered_agents[reg.agent_id]["registered_at"] = datetime.utcnow().isoformat()
+    data = reg.model_dump()
+    data["registered_at"] = datetime.utcnow().isoformat()
+
+    # In DB + Cache speichern
+    await async_save_agent(data)
+    _agent_cache[reg.agent_id] = data
+
     return {"status": "registered", "agent_id": reg.agent_id}
 
 
 @app.get("/agents", tags=["Agents"])
 async def list_agents():
     """UI holt diese Liste um die Agent-Auswahl dynamisch zu rendern."""
-    return list(registered_agents.values())
+    return list(_agent_cache.values())
 
 
 @app.delete("/agents/{agent_id}", tags=["Agents"])
 async def unregister_agent(agent_id: str):
-    if agent_id not in registered_agents:
+    if agent_id not in _agent_cache:
         raise HTTPException(404, "Agent nicht gefunden")
-    del registered_agents[agent_id]
+
+    # Aus DB + Cache löschen
+    await async_delete_agent(agent_id)
+    del _agent_cache[agent_id]
+
     return {"status": "unregistered"}
 
 
@@ -197,7 +237,7 @@ async def unregister_agent(agent_id: str):
 @app.post("/missions", tags=["Missions"])
 async def create_mission(config: MissionConfig, background_tasks: BackgroundTasks):
     """Erstellt und startet eine Mission."""
-    unknown = [aid for aid in config.agent_ids if aid not in registered_agents]
+    unknown = [aid for aid in config.agent_ids if aid not in _agent_cache]
     if unknown:
         raise HTTPException(400, f"Unbekannte Agents: {unknown}")
 
@@ -207,6 +247,7 @@ async def create_mission(config: MissionConfig, background_tasks: BackgroundTask
         "config":     config.model_dump(),
         "status":     "running",
         "started_at": datetime.utcnow().isoformat(),
+        "finished_at": None,
         "findings":   [],
         "logs":       [],
         "agent_states": {
@@ -217,13 +258,16 @@ async def create_mission(config: MissionConfig, background_tasks: BackgroundTask
     active_missions[mission_id] = mission
     ws_connections[mission_id] = []
 
+    # In DB persistieren
+    await async_save_mission(mission)
+
     background_tasks.add_task(dispatch_agents, mission_id, config)
 
     return {"mission_id": mission_id, "status": "running"}
 
 
 @app.get("/missions/{mission_id}", tags=["Missions"])
-async def get_mission(mission_id: str):
+async def get_mission_endpoint(mission_id: str):
     if mission_id not in active_missions:
         raise HTTPException(404, "Mission nicht gefunden")
     return active_missions[mission_id]
@@ -239,6 +283,7 @@ async def stop_mission(mission_id: str):
     if mission_id not in active_missions:
         raise HTTPException(404, "Mission nicht gefunden")
     active_missions[mission_id]["status"] = "stopped"
+    await async_save_mission(active_missions[mission_id])
     await broadcast(mission_id, {
         "event": "mission_stopped",
         "timestamp": datetime.utcnow().isoformat()
@@ -348,6 +393,9 @@ async def receive_agent_update(mission_id: str, body: UpdateAuth):
         if update.agent_id in mission["agent_states"]:
             mission["agent_states"][update.agent_id]["status"] = "error"
 
+    # Mission in DB persistieren (nach jedem Update)
+    await async_save_mission(mission)
+
     await broadcast(mission_id, event)
     return {"status": "ok", "should_stop": mission["status"] == "stopped"}
 
@@ -382,7 +430,7 @@ async def relay_message(mission_id: str, msg: RelayMessage):
     await broadcast(mission_id, event)
 
     # Optionales HTTP-Forward an Ziel-Agent
-    target_agent = registered_agents.get(msg.to_agent)
+    target_agent = _agent_cache.get(msg.to_agent)
     if target_agent and target_agent.get("callback_url"):
         try:
             async with httpx.AsyncClient(timeout=5.0) as client:
@@ -452,7 +500,7 @@ async def dispatch_agents(mission_id: str, config: MissionConfig):
     async with httpx.AsyncClient(timeout=30.0) as client:
         tasks = []
         for agent_id in config.agent_ids:
-            agent = registered_agents.get(agent_id)
+            agent = _agent_cache.get(agent_id)
             if not agent or not agent.get("callback_url"):
                 await broadcast(mission_id, {
                     "event": "log",
@@ -527,7 +575,8 @@ async def health():
     return {
         "status": "ok",
         "redis": "connected" if redis_ok else "unavailable",
-        "agents": len(registered_agents),
+        "persistence": "sqlite",
+        "agents": len(_agent_cache),
         "missions": len(active_missions),
         "active_missions": sum(1 for m in active_missions.values() if m["status"] == "running"),
     }

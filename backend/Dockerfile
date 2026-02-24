@@ -6,7 +6,11 @@ COPY backend/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY backend/main.py .
+COPY backend/db.py .
 COPY backend/adapters/ ./adapters/
+
+# Daten-Verzeichnis (wird via Volume gemountet)
+RUN mkdir -p /app/data
 
 EXPOSE 8000
 

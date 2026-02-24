@@ -9,6 +9,27 @@
 #   nginx (80/443) → frontend (React) + backend (FastAPI)
 #   backend        → redis (Message Broker)
 #   agents         → registrieren sich automatisch beim backend
+#
+# Cognitive Layer:
+#   Alle Agenten nutzen LLM-Reasoning (Anthropic/OpenAI) für:
+#   - Autonomes Planning & Reasoning (Chain-of-Thought)
+#   - Episodisches/Semantisches/Prozedurales Memory (SQLite)
+#   - Self-Reflection & Self-Correction (ReAct)
+#   - Swarm Intelligence (Stigmergy, Emergence, Resilience)
+
+# Shared environment block for all agent services
+x-agent-env: &agent-env
+  OPENAI_API_KEY:              "${OPENAI_API_KEY:-}"
+  ANTHROPIC_API_KEY:           "${ANTHROPIC_API_KEY:-}"
+  REDSWARM_API_KEY:            "${REDSWARM_API_KEY:-changeme}"
+  REDSWARM_COGNITIVE_ENABLED:  "${REDSWARM_COGNITIVE_ENABLED:-true}"
+  REDSWARM_LLM_PROVIDER:      "${REDSWARM_LLM_PROVIDER:-anthropic}"
+  REDSWARM_LLM_MODEL:         "${REDSWARM_LLM_MODEL:-}"
+  REDSWARM_LLM_TEMPERATURE:   "${REDSWARM_LLM_TEMPERATURE:-0.7}"
+  REDSWARM_LLM_MAX_TOKENS:    "${REDSWARM_LLM_MAX_TOKENS:-2000}"
+  REDSWARM_HEARTBEAT_TIMEOUT:  "${REDSWARM_HEARTBEAT_TIMEOUT:-30.0}"
+  REDSWARM_PHEROMONE_DECAY:    "${REDSWARM_PHEROMONE_DECAY:-0.05}"
+  REDSWARM_DATA_DIR:           "/app/data"
 
 services:
 
@@ -35,9 +56,9 @@ services:
     environment:
       REDIS_URL:          "redis://redis:6379"
       BACKEND_URL:        "http://backend:8000"
-      REDSWARM_API_KEY:   "${REDSWARM_API_KEY:-changeme}"
-      OPENAI_API_KEY:     "${OPENAI_API_KEY:-}"
-      ANTHROPIC_API_KEY:  "${ANTHROPIC_API_KEY:-}"
+      <<: *agent-env
+    volumes:
+      - redswarm_data:/app/data
     networks:
       - internal
       - agents
@@ -80,12 +101,12 @@ services:
       dockerfile: agents/recon/Dockerfile
     restart: unless-stopped
     environment:
-      BACKEND_URL:       "http://backend:8000"
-      AGENT_BASE_URL:    "http://agent-recon:8100"
-      AGENT_PORT:        "8100"
-      REDSWARM_API_KEY:  "${REDSWARM_API_KEY:-changeme}"
-      OPENAI_API_KEY:    "${OPENAI_API_KEY:-}"
-      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      BACKEND_URL:    "http://backend:8000"
+      AGENT_BASE_URL: "http://agent-recon:8100"
+      AGENT_PORT:     "8100"
+      <<: *agent-env
+    volumes:
+      - redswarm_data:/app/data
     networks:
       - internal
       - agents
@@ -100,12 +121,12 @@ services:
       dockerfile: agents/exploit/Dockerfile
     restart: unless-stopped
     environment:
-      BACKEND_URL:       "http://backend:8000"
-      AGENT_BASE_URL:    "http://agent-exploit:8101"
-      AGENT_PORT:        "8101"
-      REDSWARM_API_KEY:  "${REDSWARM_API_KEY:-changeme}"
-      OPENAI_API_KEY:    "${OPENAI_API_KEY:-}"
-      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      BACKEND_URL:    "http://backend:8000"
+      AGENT_BASE_URL: "http://agent-exploit:8101"
+      AGENT_PORT:     "8101"
+      <<: *agent-env
+    volumes:
+      - redswarm_data:/app/data
     networks:
       - internal
       - agents
@@ -120,12 +141,12 @@ services:
       dockerfile: agents/execution/Dockerfile
     restart: unless-stopped
     environment:
-      BACKEND_URL:       "http://backend:8000"
-      AGENT_BASE_URL:    "http://agent-execution:8102"
-      AGENT_PORT:        "8102"
-      REDSWARM_API_KEY:  "${REDSWARM_API_KEY:-changeme}"
-      OPENAI_API_KEY:    "${OPENAI_API_KEY:-}"
-      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      BACKEND_URL:    "http://backend:8000"
+      AGENT_BASE_URL: "http://agent-execution:8102"
+      AGENT_PORT:     "8102"
+      <<: *agent-env
+    volumes:
+      - redswarm_data:/app/data
     networks:
       - internal
       - agents
@@ -140,12 +161,12 @@ services:
       dockerfile: agents/c4/Dockerfile
     restart: unless-stopped
     environment:
-      BACKEND_URL:       "http://backend:8000"
-      AGENT_BASE_URL:    "http://agent-c4:8103"
-      AGENT_PORT:        "8103"
-      REDSWARM_API_KEY:  "${REDSWARM_API_KEY:-changeme}"
-      OPENAI_API_KEY:    "${OPENAI_API_KEY:-}"
-      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      BACKEND_URL:    "http://backend:8000"
+      AGENT_BASE_URL: "http://agent-c4:8103"
+      AGENT_PORT:     "8103"
+      <<: *agent-env
+    volumes:
+      - redswarm_data:/app/data
     networks:
       - internal
       - agents
@@ -155,6 +176,7 @@ services:
 
 volumes:
   redis_data:
+  redswarm_data:
 
 networks:
   internal:

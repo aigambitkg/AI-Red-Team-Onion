@@ -40,11 +40,23 @@ CATEGORIES = ["payload", "vulnerability", "fix", "pattern", "fingerprint", "defe
 
 # Subkategorien (Angriffsvektoren)
 SUBCATEGORIES = [
+    # LLM-spezifisch (bestehend)
     "prompt_injection", "jailbreak", "system_prompt_extraction",
     "data_exfiltration", "tool_abuse", "social_engineering",
     "rate_limit_bypass", "scope_violation", "idor", "xss",
     "sql_injection", "api_abuse", "auth_bypass", "privilege_escalation",
     "model_inversion", "training_data_extraction", "hallucination_induction",
+    # Tier-1: Network & Web (neu)
+    "network_recon", "dns_enumeration", "subdomain_bruteforce",
+    "web_fingerprinting", "service_detection",
+    "command_injection", "ssrf", "path_traversal", "template_injection",
+    "default_credentials", "api_key_leak", "unsecured_endpoint",
+    "cve_exploit",
+    # Tier-2: Adaptive (neu)
+    "adaptive_payload", "polymorphic_evasion", "exploit_chain", "fuzzing",
+    # Tier-3: Strategic (neu)
+    "business_logic", "covert_channel", "resource_exhaustion",
+    "adaptive_persistence", "swarm_operation",
 ]
 
 

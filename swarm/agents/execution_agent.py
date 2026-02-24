@@ -159,12 +159,17 @@ class ExecutionAgent(SwarmAgent):
                 self.blackboard.update_task(ft.id, "pending")
 
     async def handle_task(self, task: BlackboardEntry) -> str:
-        """Aufgabe bearbeiten"""
+        """Aufgabe bearbeiten — inkl. Tier-3 strategische Tasks"""
         self.logger.info(f"Bearbeite Task: {task.title}")
+        title_lower = task.title.lower()
 
-        if "execute" in task.title.lower() or "ausführ" in task.title.lower():
+        if "tier3_persistence" in title_lower:
+            return await self._execute_tier3_persistence(task)
+        elif "tier3_" in title_lower or (task.metadata and task.metadata.get("tier3_operation")):
+            return await self._execute_tier3_task(task)
+        elif "execute" in title_lower or "ausführ" in title_lower:
             return await self._execute_exploit_by_id(task)
-        elif "persist" in task.title.lower():
+        elif "persist" in title_lower:
             return await self._establish_persistence(task)
         else:
             return await self._execute_exploit_by_id(task)
@@ -438,11 +443,53 @@ class ExecutionAgent(SwarmAgent):
 
     # ─── ANALYSE ──────────────────────────────────────────────────────────────
 
-    def _analyze_response(self, response: str, vector: str) -> bool:
-        """Analysiert ob eine Antwort eine Schwachstelle indiziert"""
+    def _analyze_response(self, response: str, vector: str, payload: str = "", target: str = "") -> bool:
+        """
+        Analysiert ob eine Antwort eine Schwachstelle indiziert.
+
+        Nutzt den ResultVerifier für evidenzbasierte Verifizierung statt
+        reinem Keyword-Matching (Anti-Halluzination).
+        """
         if not response:
             return False
 
+        # ── ResultVerifier (evidenzbasiert) ─────────────────────
+        if hasattr(self, 'verify_result') and payload:
+            try:
+                from swarm.validation.result_verifier import VerificationLevel
+                finding = self.verify_result(
+                    vector=vector,
+                    payload=payload,
+                    target=target or "unknown",
+                    response=response,
+                )
+                if finding.verification_level == VerificationLevel.REFUTED:
+                    self.logger.debug(f"ResultVerifier: Finding WIDERLEGT für {vector}")
+                    return False
+                if finding.verification_level in (VerificationLevel.CONFIRMED, VerificationLevel.PROBABLE):
+                    self.logger.info(
+                        f"ResultVerifier: {finding.verification_level.value} "
+                        f"(Confidence: {finding.final_confidence:.2f}, "
+                        f"Evidenzen: {finding.evidence_count})"
+                    )
+                    # Register for consensus if high-enough confidence
+                    if finding.final_confidence >= 0.4 and hasattr(self, 'register_for_consensus'):
+                        self.register_for_consensus(
+                            finding_id=finding.finding_id,
+                            vector=vector,
+                            target=target or "unknown",
+                            severity="high" if finding.final_confidence > 0.7 else "medium",
+                        )
+                        self.confirm_finding(
+                            finding_id=finding.finding_id,
+                            summary=f"ExecutionAgent: {vector} exploit result verified",
+                            confidence=finding.final_confidence,
+                        )
+                    return finding.verification_level == VerificationLevel.CONFIRMED
+            except Exception as e:
+                self.logger.debug(f"ResultVerifier nicht verfügbar, Fallback: {e}")
+
+        # ── Fallback: Pattern-basierte Analyse ──────────────────
         response_lower = response.lower()
 
         # Refusal erkennen → kein Erfolg
@@ -473,6 +520,100 @@ class ExecutionAgent(SwarmAgent):
         """Eingehende Nachrichten verarbeiten"""
         if msg.message_type == "directive":
             self.logger.info(f"Direktive von {msg.sender}: {msg.subject}")
+
+    # ─── TIER-3 STRATEGISCHE EXECUTION ──────────────────────────────────────
+
+    async def _execute_tier3_task(self, task: BlackboardEntry) -> str:
+        """
+        Führt einen koordinierten Tier-3-Task aus.
+        Liest den Operationsplan und führt die zugewiesene Phase aus.
+        """
+        meta = task.metadata or {}
+        plan_id = meta.get("plan_id", "")
+        phase_index = meta.get("phase_index", 0)
+
+        self.logger.info(f"Tier-3 Task: Plan={plan_id}, Phase={phase_index}")
+
+        # Exploit-Chain ausführen wenn vorhanden
+        try:
+            from payloads.tier2_chain_builder import ExploitChainBuilder
+            builder = ExploitChainBuilder()
+
+            # Findings vom Blackboard sammeln
+            target = task.target_system or ""
+            intel = self.blackboard.read(section="intel", limit=20)
+            findings = []
+            for entry in intel:
+                if entry.target_system == target and entry.attack_vector:
+                    findings.append({
+                        "id": entry.id,
+                        "vulnerability": entry.attack_vector,
+                        "severity": (entry.metadata or {}).get("severity", "medium"),
+                        "confidence": entry.confidence,
+                        "target": target,
+                    })
+
+            if findings:
+                chain = builder.build_chain(findings)
+                if chain and chain.steps:
+                    results = []
+                    for step in chain.steps:
+                        results.append(
+                            f"Chain-Step: {step.get('vulnerability', 'unknown')} "
+                            f"→ Confidence: {step.get('confidence', 0):.0%}"
+                        )
+                    return (
+                        f"Tier-3 Exploit-Chain ({len(chain.steps)} Schritte) "
+                        f"für {target} vorbereitet.\n" + "\n".join(results)
+                    )
+        except ImportError:
+            pass
+        except Exception as e:
+            self.logger.warning(f"Tier-3 Chain-Execution Fehler: {e}")
+
+        return f"Tier-3 Task verarbeitet: {task.title}"
+
+    async def _execute_tier3_persistence(self, task: BlackboardEntry) -> str:
+        """
+        Tier-3 Adaptive Persistenz mit automatischer Rotation bei Erkennung.
+        """
+        meta = task.metadata or {}
+        target = task.target_system or ""
+
+        try:
+            from payloads.tier3_adaptive_persistence import AdaptivePersistenceManager
+
+            manager = AdaptivePersistenceManager()
+            methods = manager.get_available_methods()
+
+            # Erste Persistenz-Methode installieren
+            if methods:
+                method = methods[0]
+                handle = manager.install_persistence(method=method, target=target)
+                if handle:
+                    self.post_execution_result(
+                        title=f"Tier-3 Persistenz: {method} @ {target}",
+                        result=f"Adaptive Persistenz etabliert.\nMethode: {method}\n"
+                               f"Rotation: Automatisch bei Erkennung\n"
+                               f"Verfügbare Fallback-Methoden: {len(methods) - 1}",
+                        success=True,
+                        kill_chain_phase=4,
+                        metadata={
+                            "tier3_persistence": True,
+                            "method": method,
+                            "target": target,
+                            "success": True,
+                        },
+                    )
+                    return f"Tier-3 Persistenz etabliert: {method} @ {target}"
+
+        except ImportError:
+            self.logger.debug("Tier-3 Persistence Module nicht verfügbar")
+        except Exception as e:
+            self.logger.warning(f"Tier-3 Persistenz Fehler: {e}")
+
+        # Fallback: Standard-Persistenz
+        return await self._establish_persistence(task)
 
     def get_execution_stats(self) -> Dict:
         """Ausführungsstatistiken"""

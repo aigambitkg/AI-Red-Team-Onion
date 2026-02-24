@@ -33,6 +33,16 @@ from modules.tool_abuse import ToolAbuseModule
 from modules.data_exfiltration import DataExfiltrationModule
 from modules.social_engineering import SocialEngineeringModule
 from modules.api_client import LLMAPIClient, APIConfig
+
+# Tier-1 Module (optional — kein Fehler wenn nicht vorhanden)
+try:
+    from modules.web_vulnerability import WebVulnerabilityModule
+    from modules.reconnaissance import ReconnaissanceModule
+    from modules.credential_testing import CredentialTestingModule
+    from modules.cve_scanner import CVEScannerModule
+    _TIER1_MODULES_AVAILABLE = True
+except ImportError:
+    _TIER1_MODULES_AVAILABLE = False
 from browser.chatbot_interactor import ChatbotInteractor
 from monitor.event_logger import EventLogger, EventSeverity, EventType, ScanEvent
 
@@ -195,6 +205,15 @@ class RedTeamScanner:
             "data_exfiltration": DataExfiltrationModule,
             "social_engineering": SocialEngineeringModule,
         }
+
+        # Tier-1 Module registrieren (wenn verfügbar)
+        if _TIER1_MODULES_AVAILABLE:
+            module_map.update({
+                "web_vulnerability": WebVulnerabilityModule,
+                "reconnaissance": ReconnaissanceModule,
+                "credential_testing": CredentialTestingModule,
+                "cve_scanner": CVEScannerModule,
+            })
 
         active = []
         for mod_name in self.config.scan.modules:

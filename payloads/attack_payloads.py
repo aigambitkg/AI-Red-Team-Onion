@@ -380,6 +380,35 @@ SUCCESS_INDICATORS = {
         "i don't have access",
         "i must decline",
     ],
+
+    # ── Tier-1 Web Attack Indicators ──────────────────────────────────
+    "sql_injection": [
+        "syntax error", "mysql", "postgresql", "sqlite", "oracle",
+        "you have an error in your sql", "unclosed quotation",
+        "warning: mysql", "unterminated string", "sqlstate",
+        "microsoft ole db", "odbc drivers", "jdbc",
+    ],
+    "xss": [
+        "<script>", "alert(", "onerror=", "onload=",
+        "javascript:", "document.cookie", "eval(",
+    ],
+    "command_injection": [
+        "uid=", "root:", "/etc/passwd", "windows\\system32",
+        "volume serial number", "command not found",
+        "bin/sh", "bin/bash", "whoami",
+    ],
+    "ssrf": [
+        "ami-id", "instance-id", "metadata", "169.254.169.254",
+        "localhost", "internal server", "connection refused",
+    ],
+    "path_traversal": [
+        "root:x:0", "[boot loader]", "win.ini",
+        "etc/passwd", "etc/shadow", "web.config",
+    ],
+    "template_injection": [
+        "49", "7777777", "object", "__class__",
+        "__mro__", "__subclasses__", "popen",
+    ],
 }
 
 # Severity Scoring
