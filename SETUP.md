@@ -25,8 +25,8 @@ The fastest way to run AI Red Team Onion. Requires only Docker.
 
 ```bash
 # Clone
-git clone https://github.com/YOUR_USERNAME/redswarm.git
-cd redswarm
+git clone https://github.com/aigambitkg/ai-red-team-onion.git
+cd ai_red_team
 
 # Configure (minimum: add one API key)
 cp .env.example .env
@@ -188,8 +188,8 @@ Use this if you want to develop, modify, or contribute to AI Red Team Onion.
 ### Step 1: Clone and enter the repo
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/redswarm.git
-cd redswarm
+git clone https://github.com/aigambitkg/ai-red-team-onion.git
+cd ai_red_team
 ```
 
 ### Step 2: Create a virtual environment
@@ -607,7 +607,7 @@ REDSWARM_HEARTBEAT_TIMEOUT=60.0
 
 **404 Not Found**
 - Verify `NOTION_DATABASE_ID` is the 32-character hex string, not the full URL
-- Remove dashes if present: `e425a756ca8113f3b6dc5afa759ea40` (no dashes)
+- Remove dashes if present: `e425a756ba8b13ea03b6da5afa759ea49` (no dashes)
 
 ### Knowledge Base issues
 
@@ -629,5 +629,5 @@ python3 main.py --kb-rebuild   # Rebuild the vector index
 
 ## Need help?
 
-- **GitHub Issues:** [github.com/YOUR_USERNAME/redswarm/issues](https://github.com/YOUR_USERNAME/redswarm/issues)
+- **GitHub Issues:** [github.com/aigambitkg/ai-red-team-onion/issues](https://github.com/aigambit/ai-red-team-onion/issues)
 - **Website:** [ai-gambit.com](https://ai-gambit.com)
