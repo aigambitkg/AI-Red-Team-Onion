@@ -51,9 +51,9 @@ This project is for **defensive security research only**. By contributing, you a
 
 ```bash
 # Fork on GitHub first, then:
-git clone https://github.com/YOUR_USERNAME/redswarm.git
-cd redswarm
-git remote add upstream https://github.com/ORIGINAL_USERNAME/redswarm.git
+git clone https://github.com/aigambitkg/ai-red-team-onion.git
+cd ai-red-team
+git remote add upstream https://github.com/aigambitkg/ai-red-team-onion.git
 ```
 
 ### 2. Set up Python environment
@@ -102,7 +102,7 @@ python3 -m py_compile $(find . -name "*.py" -not -path "./.venv/*")
 Understanding where things live:
 
 ```
-redswarm/
+ai-red-team/
 │
 ├── swarm/                      # Multi-agent swarm core
 │   ├── agent_base.py           # SwarmAgent + CognitiveMixin base class
@@ -153,7 +153,7 @@ redswarm/
 
 ### Reporting bugs
 
-Open a [GitHub Issue](https://github.com/YOUR_USERNAME/redswarm/issues) and include:
+Open a [GitHub Issue](https://github.com/aigambitkg/ai-red-team-onion/issues) and include:
 
 1. **AI Red Team Onion version** (`git log -1 --oneline`)
 2. **Operating system** and Docker version
@@ -361,6 +361,6 @@ Open a PR with a JSON file in `payloads/community/`:
 
 ## Questions?
 
-- Open a [GitHub Discussion](https://github.com/YOUR_USERNAME/redswarm/discussions) for general questions
-- Open an [Issue](https://github.com/YOUR_USERNAME/redswarm/issues) for bugs and feature requests
+- Open a [GitHub Discussion](https://github.com/aigambitkg/ai-red-team-onion/discussions) for general questions
+- Open an [Issue](https://github.com/aigambitkg/ai-red-team-onion/issues) for bugs and feature requests
 - Contact the maintainers via [ai-gambit.com](https://ai-gambit.com)
