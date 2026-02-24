@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🔴 AI Red Team Onion
+# 🔴 AI Red Team Onion 🧅
 
 ### AI Red Team — Autonomous Multi-Agent Security Framework
 
@@ -70,7 +70,7 @@ AI Red Team Onion is an open-source framework for **automated adversarial testin
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/YOUR_USERNAME/redswarm.git
+git clone https://github.com/aigambitkg/ai-red-team-onion.git
 cd redswarm
 
 # 2. Configure environment
@@ -530,6 +530,6 @@ MIT — see [LICENSE](LICENSE).
 
 <div align="center">
 
-Built by [AI-Gambit](https://ai-gambit.com) · [Report a Bug](https://github.com/YOUR_USERNAME/redswarm/issues) · [Request a Feature](https://github.com/YOUR_USERNAME/redswarm/issues)
+Built by [AI-Gambit](https://ai-gambit.com) · [Report a Bug](https://github.com/aigambitkg/ai-red-team-onion/issues) · [Request a Feature](https://github.com/aigambitkg/ai-red-team-onion/issues)
 
 </div>
